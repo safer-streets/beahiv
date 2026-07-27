@@ -1,6 +1,6 @@
 # BEAHIV
 
-**B**ritish **E**qual-**A**rea **H**exagonal, **I**ndex, that's **V**ersatile.
+**B**ritish National Grid **E**qual-**A**rea **H**exagonal **I**ndex that's **V**ersatile.
 
 A fast, equal-area hexagonal spatial index native to **EPSG:27700** (British
 National Grid). BEAHIV is a local alternative to H3: it trades global
@@ -19,6 +19,15 @@ Each letter maps onto something the index actually does:
 - **Versatile** — side length and the q/r offset are both parameters
   baked straight into the bits, not values looked up from a table, so
   neither is fixed by the format itself.
+
+## Philosophy
+
+BEAHIV intentionally rejects the compromises made by global spherical hex
+systems. The grid is topologically regular, geometrically regular, equal
+area, deterministic, and projection-native. For regional analysis in
+Great Britain, equal area matters more than global continuity — the
+result is a local, equal-area analogue of H3, optimised for statistical
+analysis rather than global indexing.
 
 ## Design goals
 
@@ -78,6 +87,10 @@ Dependencies are `numpy`, `pyproj`, and `shapely`. Only `polyfill` (see
 below) touches Shapely -- the rest of the indexing code never does any
 point-in-polygon query.
 
+There is one extra, `beahiv[arrow]`, which pins `pyarrow` for the
+Arrow-in/Arrow-out encoding path (see [pyarrow](#pyarrow) below). It is
+not needed for that path to work.
+
 ## Quickstart
 
 ```python
@@ -99,6 +112,36 @@ beahiv.distance(cell_id, other)  # hex grid distance between two cells
 ```
 
 ## Core concepts
+
+### Side length
+
+`side_length` must be a whole number of metres, not an index into a fixed
+resolution table -- unlike H3's 16 discrete resolutions, any integer
+satisfying `1 <= side_length <= 1,048,575` (`SIDE_LENGTH_MAX` in
+`cell_id.py`, the 20-bit ceiling) is a valid grid to index against, in
+either orientation. `encode`/`encode_morton` raise `ValueError` outside
+that range: `side_length <= 0` isn't a size, and anything above the
+ceiling doesn't fit the 20-bit field.
+
+Two things this does *not* enforce:
+
+- **Whole metres only.** `side_length` must be an `int` -- a float such
+  as `500.5` isn't rejected with a helpful message, it fails at the bit
+  shift (`TypeError`, since Python won't `<<` a float) inside `encode`.
+  Round or truncate before calling.
+- **No cross-resolution nesting -- not even at integer multiples.**
+  Cells at different `side_length` values are independent lattices
+  scaled by `s`, not levels of a hierarchy, and this isn't fixed by
+  choosing a "clean" ratio: a regular hexagon can't be exactly tiled by
+  smaller regular hexagons of the same orientation for *any* integer
+  factor, the way a square cleanly quarters for a quadtree. Picking
+  `side_length=300` as "3x" a `side_length=100` grid doesn't produce
+  9 small cells per big cell either -- most straddle the big cell's
+  boundary instead of nesting inside it. There is no parent/child
+  relationship here at all, clean-multiple or not, unlike H3's fixed
+  resolution hierarchy. Mixing side lengths in one dataset is fine as
+  long as each cell id carries its own (which it does, by construction),
+  but don't expect `k_ring`/aggregation across different side lengths.
 
 ### Coordinate system
 
@@ -184,10 +227,41 @@ implementation in `beahiv.batch`, which also remains available directly
 for callers who want an unambiguous vectorised call:
 
 ```python
-from beahiv.batch import latlon_to_cell_batch, cell_to_latlon_batch
+from beahiv.batch import latlon_to_cell_batch, bng_to_cell_batch, cell_to_latlon_batch
 
 cell_ids = latlon_to_cell_batch(lats, lons, side_length=500)
 ```
+
+A missing coordinate (`NaN`) is an absent point rather than an error: it
+encodes to `INVALID_CELL_ID` (`0`), which no valid `encode` can produce.
+
+### pyarrow
+
+`latlon_to_cell` and `bng_to_cell` also take a pyarrow `Array` or
+`ChunkedArray`, and give a `uint64` `Array` back — Arrow in, Arrow out.
+Nulls arrive as `NaN` and so encode to `INVALID_CELL_ID`:
+
+```python
+import pyarrow as pa
+
+cell_ids = beahiv.bng_to_cell(pa.array(xs), pa.array(ys), side_length=202)
+```
+
+This is what makes beahiv usable as a vectorised UDF in an Arrow-native
+query engine (DuckDB, Polars), where a per-row Python call would dominate:
+
+```python
+con.create_function(
+    "beahiv_cell",
+    lambda x, y: beahiv.bng_to_cell(x, y, 202),
+    [DOUBLE, DOUBLE], UBIGINT, type="arrow",
+)
+```
+
+pyarrow is **not** a runtime dependency: the import happens lazily, on a
+branch only reachable when the caller has already handed us a pyarrow
+object. The `beahiv[arrow]` extra exists to pin a version and advertise
+the capability, not to make the feature work.
 
 ### Filling a polygon with cells
 
@@ -228,8 +302,8 @@ Property tests cover:
 | --- | --- |
 | `encode(q, r, side_length, orientation)` | Build a cell id |
 | `decode(cell_id)` | Recover `CellIndex(q, r, side_length, orientation)` |
-| `latlon_to_cell(lat, lon, side_length, orientation)` | WGS84 → cell id |
-| `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip |
+| `latlon_to_cell(lat, lon, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow) |
+| `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow) |
 | `centroid(cell_id, latlon=False)` | Cell centre → EPSG:27700 (default) or WGS84 (`latlon=True`) |
 | `cell_centre(cell_id)` | Cell centre in EPSG:27700 |
 | `cell_polygon(cell_id)` | Six vertices in EPSG:27700 |
@@ -239,11 +313,3 @@ Property tests cover:
 | `encode_morton` / `decode_morton` | Z-order variant of `encode`/`decode` |
 | `polyfill(polygon, side_length, orientation, predicate)` | Every cell id covering a Shapely polygon |
 
-## Philosophy
-
-BEAHIV intentionally rejects the compromises made by global spherical hex
-systems. The grid is topologically regular, geometrically regular, equal
-area, deterministic, and projection-native. For regional analysis in
-Great Britain, equal area matters more than global continuity — the
-result is a local, equal-area analogue of H3, optimised for statistical
-analysis rather than global indexing.

@@ -13,6 +13,12 @@ dependencies = [
     "shapely>=2.0",
 ]
 
+# `latlon_to_cell` / `bng_to_cell` return a pyarrow array when handed one, via a lazy import that is
+# only reachable if the caller already has pyarrow (see geo._match_arrow) -- so this extra pins a
+# version and advertises the capability rather than being required for it to work.
+[project.optional-dependencies]
+arrow = ["pyarrow>=17"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/beahiv"]
 
@@ -28,6 +34,7 @@ select = ["A", "B", "E", "F", "I", "SIM", "UP"]
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.1",
+    "pyarrow>=17",  # exercises the arrow extra's round-trip path in tests/test_arrow.py
     "pytest>=8.0",
     "ruff>=0.8",
     "ty>=0.0.63",

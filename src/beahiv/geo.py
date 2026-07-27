@@ -10,23 +10,25 @@ to the numpy-vectorised equivalent in `beahiv.batch`, which remains
 available directly for callers who want an unambiguous vectorised call.
 """
 
-from typing import overload
+from typing import TYPE_CHECKING, overload
 
 import numpy as np
 from numpy.typing import ArrayLike
 from pyproj import Transformer
 
 from .batch import (
-    cartesian_to_axial_batch,
+    bng_to_cell_batch,
     cell_centre_batch,
     cell_to_latlon_batch,
-    encode_batch,
     latlon_to_cell_batch,
 )
 from .cell_id import encode
 from .coords import cartesian_to_axial
 from .geometry import cell_centre
 from .orientation import Orientation
+
+if TYPE_CHECKING:  # only for the pyarrow overloads -- never imported at runtime from module scope
+    import pyarrow as pa
 
 _TO_BNG = Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=True)
 _TO_WGS84 = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
@@ -50,8 +52,37 @@ def _check_in_area_of_use(lat: float, lon: float) -> None:
         )
 
 
+def _is_arrow(value: object) -> bool:
+    """True if ``value`` is a pyarrow array (Array, ChunkedArray, ...), without importing pyarrow."""
+    return type(value).__module__.startswith("pyarrow")
+
+
+def _match_arrow(cell_ids: np.ndarray, source: object) -> "np.ndarray | pa.Array":
+    """Return the ids as a pyarrow array when the caller passed pyarrow in, else unchanged.
+
+    The import is deliberately lazy and unguarded: ``source`` can only be a pyarrow object if the
+    caller's process has already imported pyarrow, so this can never raise ImportError on a path
+    that actually runs. That keeps pyarrow out of beahiv's runtime requirements -- the ``arrow``
+    extra exists to pin a version and advertise the capability, not to make this import safe.
+    Dispatching on the argument (rather than on whether pyarrow is importable) also keeps the return
+    type a function of the input alone, so it can't change with how the package was installed.
+    """
+    if not _is_arrow(source):
+        return cell_ids
+    import pyarrow as pa
+
+    return pa.array(cell_ids)
+
+
 @overload
 def latlon_to_cell(lat: float, lon: float, side_length: int, orientation: Orientation = Orientation.FLAT) -> int: ...
+@overload
+def latlon_to_cell(
+    lat: "pa.Array | pa.ChunkedArray",
+    lon: "pa.Array | pa.ChunkedArray",
+    side_length: int,
+    orientation: Orientation = Orientation.FLAT,
+) -> "pa.Array": ...
 @overload
 def latlon_to_cell(
     lat: ArrayLike, lon: ArrayLike, side_length: int, orientation: Orientation = Orientation.FLAT
@@ -61,18 +92,28 @@ def latlon_to_cell(
     lon: ArrayLike,
     side_length: int,
     orientation: Orientation = Orientation.FLAT,
-) -> int | np.ndarray:
-    """Encode (lat, lon), scalar or array-like, to a cell id (or array of ids)."""
+) -> "int | np.ndarray | pa.Array":
+    """Encode (lat, lon), scalar or array-like, to a cell id (or array of ids).
+
+    A pyarrow array in gives a pyarrow array back (nulls become NaN, and so INVALID_CELL_ID).
+    """
     if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
         _check_in_area_of_use(lat, lon)
         x, y = _TO_BNG.transform(lon, lat)
         q, r = cartesian_to_axial(x, y, side_length, orientation)
         return encode(q, r, side_length, orientation)
-    return latlon_to_cell_batch(lat, lon, side_length, orientation)
+    return _match_arrow(latlon_to_cell_batch(lat, lon, side_length, orientation), lat)
 
 
 @overload
 def bng_to_cell(x: float, y: float, side_length: int, orientation: Orientation = Orientation.FLAT) -> int: ...
+@overload
+def bng_to_cell(
+    x: "pa.Array | pa.ChunkedArray",
+    y: "pa.Array | pa.ChunkedArray",
+    side_length: int,
+    orientation: Orientation = Orientation.FLAT,
+) -> "pa.Array": ...
 @overload
 def bng_to_cell(
     x: ArrayLike, y: ArrayLike, side_length: int, orientation: Orientation = Orientation.FLAT
@@ -82,16 +123,16 @@ def bng_to_cell(
     y: ArrayLike,
     side_length: int,
     orientation: Orientation = Orientation.FLAT,
-) -> int | np.ndarray:
+) -> "int | np.ndarray | pa.Array":
     """Encode an EPSG:27700 (x, y) point directly, with no WGS84 round trip.
 
-    Accepts scalar or array-like (x, y), same dispatch as `latlon_to_cell`.
+    Accepts scalar or array-like (x, y), same dispatch as `latlon_to_cell`: a pyarrow array in
+    gives a pyarrow array back (nulls become NaN, and so INVALID_CELL_ID).
     """
     if isinstance(x, (int, float)) and isinstance(y, (int, float)):
         q, r = cartesian_to_axial(x, y, side_length, orientation)
         return encode(q, r, side_length, orientation)
-    q, r = cartesian_to_axial_batch(x, y, side_length, orientation)
-    return encode_batch(q, r, side_length, orientation)
+    return _match_arrow(bng_to_cell_batch(x, y, side_length, orientation), x)
 
 
 @overload

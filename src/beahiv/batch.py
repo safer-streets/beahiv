@@ -162,6 +162,29 @@ def latlon_to_cell_batch(
     return cell_ids
 
 
+def bng_to_cell_batch(
+    x: ArrayLike,
+    y: ArrayLike,
+    side_length: int,
+    orientation: Orientation = Orientation.FLAT,
+) -> np.ndarray:
+    """Encode each EPSG:27700 (x, y) pair; NaN coordinates map to INVALID_CELL_ID.
+
+    No area-of-use check: unlike the lat/lon path there is no projection to extrapolate, so a
+    coordinate far outside GB is simply a cell far from the origin — and one far enough to exceed
+    the q/r bit budget is rejected by ``encode_batch`` rather than wrapping silently.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    valid = ~(np.isnan(x) | np.isnan(y))
+
+    cell_ids = np.full(x.shape, INVALID_CELL_ID, dtype=np.uint64)
+    if np.any(valid):
+        q, r = cartesian_to_axial_batch(x[valid], y[valid], side_length, orientation)
+        cell_ids[valid] = encode_batch(q, r, side_length, orientation)
+    return cell_ids
+
+
 def cell_centre_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     """Return EPSG:27700 (x, y) centres for a batch of cell ids.
 
