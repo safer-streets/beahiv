@@ -305,7 +305,6 @@ Property tests cover:
 | `latlon_to_cell(lat, lon, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow) |
 | `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow) |
 | `centroid(cell_id, latlon=False)` | Cell centre → EPSG:27700 (default) or WGS84 (`latlon=True`) |
-| `cell_centre(cell_id)` | Cell centre in EPSG:27700 |
 | `cell_polygon(cell_id)` | Six vertices in EPSG:27700 |
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |
 | `distance(cell_a, cell_b)` | Hex grid distance |

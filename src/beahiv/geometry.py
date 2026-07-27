@@ -13,12 +13,6 @@ _VERTEX_ANGLES_DEG = {
 }
 
 
-def cell_centre(cell_id: int) -> tuple[float, float]:
-    """Return the (x, y) centre of a cell in EPSG:27700 metres."""
-    idx = decode(cell_id)
-    return axial_to_cartesian(idx.q, idx.r, idx.side_length, idx.orientation)
-
-
 def cell_polygon(cell_id: int) -> list[tuple[float, float]]:
     """Return the six (x, y) vertices of a cell in EPSG:27700 metres."""
     idx = decode(cell_id)

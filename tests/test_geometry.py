@@ -2,7 +2,7 @@ import random
 
 import pytest
 
-from beahiv import Orientation, cell_centre, cell_polygon, encode
+from beahiv import Orientation, cell_polygon, centroid, encode
 from beahiv.coords import cartesian_to_axial
 
 from ._geom_helpers import hex_area, point_in_polygon_with_tolerance, polygon_area
@@ -35,6 +35,6 @@ def test_coordinate_stability_point_falls_within_returned_polygon():
         cell_id = encode(q, r, side_length, orientation)
 
         polygon = cell_polygon(cell_id)
-        centre = cell_centre(cell_id)
+        centre = centroid(cell_id)
 
         assert point_in_polygon_with_tolerance((x, y), polygon, centre)

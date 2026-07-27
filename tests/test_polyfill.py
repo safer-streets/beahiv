@@ -1,8 +1,8 @@
 import pytest
 from shapely.geometry import Point, Polygon
 
-from beahiv import Orientation, decode, polyfill
-from beahiv.geometry import cell_centre, cell_polygon
+from beahiv import Orientation, centroid, decode, polyfill
+from beahiv.geometry import cell_polygon
 
 
 def _square(minx, miny, maxx, maxy):
@@ -48,14 +48,14 @@ def test_predicate_full_is_subset_of_center_is_subset_of_overlap():
     assert full  # the square is large enough relative to the cell to contain some fully
 
 
-def test_center_predicate_matches_cell_centre_containment():
+def test_center_predicate_matches_centroid_containment():
     polygon = _square(0, 0, 2000, 2000)
     side_length = 100
 
     cells = polyfill(polygon, side_length, Orientation.POINTY, predicate="center")
 
     for cell_id in cells:
-        x, y = cell_centre(cell_id)
+        x, y = centroid(cell_id)
         assert polygon.contains(Point(x, y))
 
 

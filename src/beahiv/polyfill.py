@@ -11,8 +11,8 @@ from shapely import Point, Polygon, prepared
 from shapely.geometry.base import BaseGeometry
 
 from .cell_id import encode
-from .coords import cartesian_to_axial
-from .geometry import cell_centre, cell_polygon
+from .coords import axial_to_cartesian, cartesian_to_axial
+from .geometry import cell_polygon
 from .orientation import Orientation
 
 _PREDICATES = ("overlap", "center", "full")
@@ -74,7 +74,7 @@ def polyfill(
         for r in range(r_min, r_max + 1):
             cell_id = encode(q, r, side_length, orientation)
             if predicate == "center":
-                hit = prepared_polygon.contains(Point(cell_centre(cell_id)))
+                hit = prepared_polygon.contains(Point(axial_to_cartesian(q, r, side_length, orientation)))
             elif predicate == "full":
                 hit = prepared_polygon.contains(Polygon(cell_polygon(cell_id)))
             else:

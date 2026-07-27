@@ -3,7 +3,7 @@ import random
 import numpy as np
 import pytest
 
-from beahiv import Orientation, bng_to_cell, cell_centre, centroid, decode, latlon_to_cell
+from beahiv import Orientation, bng_to_cell, centroid, decode, latlon_to_cell
 
 
 def test_latlon_round_trip_stays_within_one_cell():
@@ -46,8 +46,14 @@ def test_centroid_matches_decoded_cell():
 
 
 def test_centroid_defaults_to_bng():
+    from pyproj import Transformer
+
+    to_wgs84 = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
     cell_id = latlon_to_cell(51.5074, -0.1278, side_length=1000, orientation=Orientation.FLAT)
-    assert centroid(cell_id) == cell_centre(cell_id)
+
+    x, y = centroid(cell_id)
+    lon, lat = to_wgs84.transform(x, y)
+    assert (lat, lon) == pytest.approx(centroid(cell_id, latlon=True))
 
 
 def test_latlon_to_cell_rejects_swapped_lat_lon():
@@ -73,11 +79,11 @@ def test_bng_to_cell_matches_latlon_to_cell():
             assert bng_to_cell(x, y, side_length, orientation) == latlon_to_cell(lat, lon, side_length, orientation)
 
 
-def test_bng_to_cell_round_trips_through_cell_centre():
+def test_bng_to_cell_round_trips_through_centroid():
     x, y = 530000.0, 180000.0
     for side_length in (50, 500):
         cell_id = bng_to_cell(x, y, side_length)
-        cx, cy = cell_centre(cell_id)
+        cx, cy = centroid(cell_id)
         assert abs(cx - x) < side_length
         assert abs(cy - y) < side_length
 

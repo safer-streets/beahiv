@@ -21,7 +21,7 @@ The library is small enough to read in full; do that before extending it. Key mo
 | [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex` |
 | [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
 | [geo.py](src/beahiv/geo.py) | Public geographic interface: `latlon_to_cell`, `bng_to_cell`, `centroid` (WGS84 ↔ EPSG:27700 ↔ cell id) |
-| [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry: `cell_centre`, `cell_polygon` (nothing stored) |
+| [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry: `cell_polygon` (nothing stored) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
 | [batch.py](src/beahiv/batch.py) | numpy-vectorised equivalents of the scalar API, for bulk encode/decode |
 | [polyfill.py](src/beahiv/polyfill.py) | `polyfill(polygon, ...)` — the one function that does point-in-polygon queries (needs Shapely) |
@@ -186,7 +186,7 @@ src/
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
     morton.py          # Z-order variant of encode/decode
     geo.py             # WGS84 <-> EPSG:27700 <-> cell id (latlon_to_cell, bng_to_cell, centroid)
-    geometry.py         # cell_centre, cell_polygon (generated on demand, nothing stored)
+    geometry.py         # cell_polygon (generated on demand, nothing stored)
     neighbours.py       # get_neighbours, distance, k_ring
     batch.py            # numpy-vectorised equivalents of the scalar API
     polyfill.py          # polygon -> hex grid (needs Shapely)

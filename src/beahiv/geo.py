@@ -22,9 +22,8 @@ from .batch import (
     cell_to_latlon_batch,
     latlon_to_cell_batch,
 )
-from .cell_id import encode
-from .coords import cartesian_to_axial
-from .geometry import cell_centre
+from .cell_id import decode, encode
+from .coords import axial_to_cartesian, cartesian_to_axial
 from .orientation import Orientation
 
 if TYPE_CHECKING:  # only for the pyarrow overloads -- never imported at runtime from module scope
@@ -150,7 +149,8 @@ def centroid(
     same side_length and orientation (see `cell_centre_batch`).
     """
     if isinstance(cell_id, int):
-        x, y = cell_centre(cell_id)
+        idx = decode(cell_id)
+        x, y = axial_to_cartesian(idx.q, idx.r, idx.side_length, idx.orientation)
         if not latlon:
             return x, y
         lon, lat = _TO_WGS84.transform(x, y)

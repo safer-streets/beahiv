@@ -7,6 +7,33 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Remove `cell_centre` — `centroid` already covers it
+
+- **Why** — `beahiv.cell_centre(cell_id)` and `beahiv.centroid(cell_id)` returned exactly the same
+  EPSG:27700 `(x, y)`; the public API had two names for one operation.
+- **What**
+  - `geometry.cell_centre` deleted, and dropped from `beahiv/__init__.py`'s imports and `__all__`.
+    `geometry.py` is now just `cell_polygon` (which never called `cell_centre` — it already
+    inlined `decode` + `axial_to_cartesian`).
+  - `geo.centroid`'s scalar branch inlines the same two lines instead of delegating; `geo.py` no
+    longer imports `geometry`.
+  - `polyfill`'s `"center"` predicate calls `axial_to_cartesian(q, r, ...)` on the loop variables
+    it already has, rather than encoding a cell id and decoding it straight back out.
+  - Tests updated to use `centroid`. `test_centroid_defaults_to_bng` was
+    `centroid(cell_id) == cell_centre(cell_id)`, which would now be a tautology — it instead
+    reprojects the default `(x, y)` and checks it against the `latlon=True` result.
+  - `README.md` API table row removed; `AGENTS.md` module table and repo-layout comment updated.
+- **Design decisions**
+  - Kept `centroid` (not `cell_centre`) because it's the one that also does WGS84 and array/pyarrow
+    dispatch; `cell_centre` was the strict subset.
+  - `polyfill` was *not* pointed at `geo.centroid` — that would drag a `pyproj`-importing module
+    into the one module that's meant to stay at arm's length from the core indexing path, to
+    recompute a centre from q/r it was holding anyway.
+- **Follow-ups**
+  - `batch.cell_centre_batch` keeps its name (it still backs `centroid`'s array branch), so the
+    scalar name it mirrored no longer exists. Renaming it to `centroid_batch` would be a separate
+    public break — not done here.
+
 ## pyarrow round-trip for `latlon_to_cell`/`bng_to_cell`; NaN handling on the BNG path
 
 - **Why** — encoding a whole crime dataset inside a DuckDB vectorised (`type="arrow"`) UDF, where
