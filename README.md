@@ -263,6 +263,65 @@ branch only reachable when the caller has already handed us a pyarrow
 object. The `beahiv[arrow]` extra exists to pin a version and advertise
 the capability, not to make the feature work.
 
+### Shapely and geopandas
+
+Point data usually arrives as a single geometry column rather than as
+separate x and y sequences. `point_to_cell` takes that column directly:
+
+```python
+gdf["cell_id"] = beahiv.point_to_cell(gdf, side_length=202)
+```
+
+It accepts a `GeoDataFrame` (its active geometry column is used), a
+`GeoSeries`, a `GeometryArray`, an object ndarray of Shapely points, or a
+plain list, and returns a `uint64` numpy array — never a `Series`, so
+assigning it back is positional and can't realign against a non-default
+index. A single `Point` returns a plain `int`, the same scalar/array
+dispatch the rest of the API uses.
+
+Going through the column is also the faster route, because it skips
+building the intermediate `Series` that `.x`/`.y` produce — on 500k
+points:
+
+| | |
+| --- | --- |
+| `point_to_cell(gdf, 202)` | 50 ms |
+| `bng_to_cell(gdf.geometry.x, gdf.geometry.y, 202)` | 89 ms |
+
+Missing (`None`) and empty points encode to `INVALID_CELL_ID`, as NaN
+coordinates do elsewhere. A non-point geometry raises rather than
+encoding to all-invalid.
+
+#### Coordinates must already be EPSG:27700
+
+`point_to_cell` reprojects nothing. Coordinates are read as British
+National Grid metres, and it is the caller's job to get them there:
+
+```python
+beahiv.point_to_cell(gdf.to_crs(27700), side_length=202)
+```
+
+This is not an oversight but a consequence of what Shapely geometry is: a
+`Point` holds two numbers and nothing else. It has no `.crs`, and while
+GEOS keeps an SRID slot (`shapely.get_srid`) it defaults to `0` and
+geopandas never populates it — so there is no CRS to reproject *from*.
+Inferring one would mean guessing.
+
+What geopandas *does* carry is a CRS on the container, and that is
+checked: a `GeoDataFrame` or `GeoSeries` whose `.crs` is anything other
+than EPSG:27700 raises rather than being silently misread. The failure it
+prevents is a quiet one — WGS84 degrees interpreted as metres put every
+point within a few metres of the grid origin, encoding to a perfectly
+valid and completely wrong cell. Geometry with no declared CRS (a bare
+object array, an unset `GeoSeries.crs`) is taken at its word.
+
+For WGS84 specifically, `latlon_to_cell` already does the projection and
+validates against EPSG:27700's area of use.
+
+geopandas is **not** a runtime dependency — `point_to_cell` duck-types on
+`.geometry` and `.crs`, and only ever calls Shapely, which beahiv already
+requires.
+
 ### Filling a polygon with cells
 
 `beahiv.polyfill` covers a Shapely polygon with hex cells — the one bulk
@@ -304,6 +363,7 @@ Property tests cover:
 | `decode(cell_id)` | Recover `CellIndex(q, r, side_length, orientation)` |
 | `latlon_to_cell(lat, lon, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow) |
 | `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow) |
+| `point_to_cell(points, side_length, orientation)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700 only |
 | `centroid(cell_id, latlon=False)` | Cell centre → EPSG:27700 (default) or WGS84 (`latlon=True`) |
 | `cell_polygon(cell_id)` | Six vertices in EPSG:27700 |
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |

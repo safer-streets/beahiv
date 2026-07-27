@@ -33,6 +33,7 @@ select = ["A", "B", "E", "F", "I", "SIM", "UP"]
 
 [dependency-groups]
 dev = [
+    "geopandas>=1.0",
     "pre-commit>=4.6.1",
     "pyarrow>=17",  # exercises the arrow extra's round-trip path in tests/test_arrow.py
     "pytest>=8.0",

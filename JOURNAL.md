@@ -7,6 +7,65 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## `point_to_cell` — encode Shapely/geopandas point geometry
+
+- **Why** — point data arrives from geopandas as a geometry column, not as separate x/y sequences.
+  Splitting it to call `bng_to_cell` is both awkward and slower than reading the coordinates once.
+- **What**
+  - New [points.py](src/beahiv/points.py) with `point_to_cell(points, side_length, orientation)`,
+    exported from `__init__.py`. Takes a single `Point` (→ `int`) or a
+    `GeoDataFrame`/`GeoSeries`/`GeometryArray`/object ndarray/list (→ `uint64` ndarray).
+  - Input must already be EPSG:27700. `_check_crs` raises when a geopandas container declares
+    anything else; undeclared geometry is taken at its word.
+  - geopandas added to the dev group so [tests/test_points.py](tests/test_points.py) exercises the
+    duck-typed branches for real — same rationale as pyarrow for `test_arrow.py`.
+  - README gets a "Shapely and geopandas" section (including a subsection on why the EPSG:27700
+    assumption exists) and an API-table row; AGENTS.md gains a rule pinning the no-reprojection
+    decision, and `points.py` is named as the second module allowed to import Shapely.
+- **Design decisions**
+  - **Not an overload of `bng_to_cell`.** A geometry form is `(geom, side_length)` against the
+    existing `(x, y, side_length)`, so the second positional argument would mean two different
+    things — `bng_to_cell(p, 100)` binds `100` to `y`. Fixing that needs either a keyword-only
+    `side_length` (breaks every positional call) or `*args`, which discards the `@overload` +
+    `ArrayLike` typing the reviewer checklist requires. A separate function has neither problem.
+  - **One dispatching function, not `point_to_cell` + `points_to_cell`.** Scalar-or-array on a
+    single argument is the convention every other entry point here follows, and two public names a
+    letter apart for near-identical behaviour is exactly the duplication the `cell_centre` removal
+    below was about.
+  - **No reprojection — EPSG:27700 in, or an error.** A working version that reprojected from the
+    container's `.crs` (and from an explicit `crs=` for bare geometry) was built and then reverted,
+    because the premise doesn't hold at the level the function operates on: Shapely geometry has no
+    CRS. There is no `.crs` on a `Point`, and the GEOS SRID slot (`shapely.get_srid`) is always `0`
+    since geopandas never populates it — so a `crs=` argument is the caller asserting something the
+    data cannot confirm, and the geopandas-container case doesn't justify the machinery on its own.
+    `.to_crs(27700)` is one call, and `latlon_to_cell` already covers WGS84 with an area-of-use
+    check the reprojecting version had to route through WGS84 to inherit.
+  - **The CRS *guard* survives the revert**, because it validates rather than infers, needs no
+    `pyproj` (duck-typed `crs.to_epsg()`), and prevents a silent wrong answer: WGS84 degrees read as
+    metres land every point within a few metres of the grid origin and encode to a valid, completely
+    wrong cell — the same failure class as `geo._check_in_area_of_use`.
+  - **Returns numpy, never a `Series`.** `gdf["cell_id"] = point_to_cell(gdf, 202)` is then
+    positional and can't realign against a non-default index. Matches the `batch.py` decoders.
+  - **Non-point geometries raise.** `shapely.get_x` returns NaN for a polygon, so without the
+    `get_type_id` check a polygon column would encode to all-`INVALID_CELL_ID` silently.
+  - **`get_x`/`get_y`, never `get_coordinates`** — the latter drops empty geometries entirely,
+    returning fewer rows than there were points and misaligning everything after the first empty.
+  - **Fast path when nothing is missing.** `get_x` raises on an empty point, so gaps force a masked
+    gather-and-scatter; that costs ~2x a straight read (26ms vs 13ms per 500k), ~20% of the whole
+    call, and a column with no gaps is the normal case. Both branches are covered by
+    `test_masked_path_agrees_with_the_all_present_fast_path`.
+- **Follow-ups**
+  - The scalar form is for completeness, not speed: ~5.7us against 0.94us for
+    `bng_to_cell(x, y, ...)`, essentially all of it Shapely attribute access (`p.x`/`p.y` 2.7us,
+    `is_empty` 1.3us). Documented in the docstring rather than optimised.
+  - If reprojection is ever wanted back, the reverted design is recorded above: route non-BNG
+    through WGS84 into `latlon_to_cell` (inheriting the area-of-use guard), cache
+    `Transformer.from_crs` (~19ms to build), and note that a BNG → WGS84 → BNG round trip moves a
+    point ~1mm, flipping the cell for 0.0005–0.007% of points sitting that close to a hex edge.
+  - geopandas in the dev group pulls in pandas and pyogrio, so CI installs are heavier across the
+    three-OS matrix. Acceptable for now; if it bites, the geopandas-specific tests could move
+    behind an `importorskip`.
+
 ## Remove `cell_centre` — `centroid` already covers it
 
 - **Why** — `beahiv.cell_centre(cell_id)` and `beahiv.centroid(cell_id)` returned exactly the same

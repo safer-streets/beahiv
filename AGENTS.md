@@ -24,6 +24,7 @@ The library is small enough to read in full; do that before extending it. Key mo
 | [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry: `cell_polygon` (nothing stored) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
 | [batch.py](src/beahiv/batch.py) | numpy-vectorised equivalents of the scalar API, for bulk encode/decode |
+| [points.py](src/beahiv/points.py) | `point_to_cell` — Shapely/geopandas point geometry (EPSG:27700 only) → cell ids (needs Shapely) |
 | [polyfill.py](src/beahiv/polyfill.py) | `polyfill(polygon, ...)` — the one function that does point-in-polygon queries (needs Shapely) |
 
 Tests are in [tests/](tests/), one `test_*.py` per module plus [tests/_geom_helpers.py](tests/_geom_helpers.py)
@@ -63,10 +64,17 @@ field) should get a directly corresponding test rather than being covered incide
 
 ## Developer Rules
 
-- **EPSG:27700 is the native CRS; WGS84 is accepted only at the boundary.** All indexing,
-  geometry, and arithmetic happens in EPSG:27700 metres. `geo.py` is the only place lat/lon enters
-  or leaves — everything else (`cell_id.py`, `coords.py`, `geometry.py`, `neighbours.py`) never
-  imports `pyproj` and never should.
+- **EPSG:27700 is the native CRS; WGS84 is accepted only at the boundary.** All indexing, geometry,
+  and arithmetic happens in EPSG:27700 metres. Only `geo.py` and its vectorised mirror `batch.py`
+  import `pyproj` and project; everything else — `cell_id.py`, `coords.py`, `geometry.py`,
+  `neighbours.py`, `morton.py`, `points.py`, `polyfill.py` — never does and never should.
+- **Nothing outside `geo.py`/`batch.py` reprojects, including `points.py`.** Shapely geometry
+  carries no CRS — no `.crs`, and the GEOS SRID slot is always `0` because geopandas doesn't set
+  it — so there is nothing to reproject *from* and inferring one would be a guess. `point_to_cell`
+  therefore requires EPSG:27700 input and only *validates*: `points._check_crs` raises when a
+  geopandas container declares any other CRS, duck-typed on `.crs` so no geopandas (or `pyproj`)
+  import is needed. Don't "improve" this into automatic reprojection; callers use `.to_crs(27700)`,
+  or `latlon_to_cell` for WGS84.
 - **Validate lat/lon against EPSG:27700's area of use before projecting.** Outside
   `lat ∈ [49.75, 61.01]`, `lon ∈ [-9.01, 2.01]` (`pyproj.CRS.from_epsg(27700).area_of_use`), PROJ
   *extrapolates* rather than erroring — a swapped or garbage lat/lon can produce an (x, y) millions
@@ -118,8 +126,8 @@ field) should get a directly corresponding test rather than being covered incide
 
 When reviewing a PR or diff, check:
 
-1. **CRS discipline** — no new `pyproj` import outside `geo.py`; any new geometry stays in
-   EPSG:27700 metres.
+1. **CRS discipline** — no new `pyproj` import outside `geo.py` and `batch.py`; any new geometry
+   stays in EPSG:27700 metres.
 2. **Orientation correctness** — any new formula involving `q`/`r` is derived per-orientation from
    first principles (or delegates to the existing `coords.py`/`batch.py` functions), never by
    algebraically "simplifying" one orientation's formula from the other's.
@@ -133,9 +141,12 @@ When reviewing a PR or diff, check:
 5. **Dispatch typing** — a new scalar/array dual-mode function uses `@overload` +
    `numpy.typing.ArrayLike`, matching `latlon_to_cell`/`bng_to_cell`/`centroid`, not a bare
    `X | np.ndarray` union return type.
-6. **Optional-dependency boundary** — `polyfill.py` is the only module allowed to import Shapely;
-   don't let a Shapely import creep into `cell_id.py`, `coords.py`, `geo.py`, `geometry.py`,
-   `neighbours.py`, `morton.py`, or `batch.py`.
+6. **Optional-dependency boundary** — `polyfill.py` and `points.py` are the only modules allowed to
+   import Shapely; don't let a Shapely import creep into `cell_id.py`, `coords.py`, `geo.py`,
+   `geometry.py`, `neighbours.py`, `morton.py`, or `batch.py`. Nothing may import geopandas at all,
+   including those two — `points.py` duck-types on `.geometry`/`.crs` instead, and geopandas is a
+   dev dependency purely so [tests/test_points.py](tests/test_points.py) can exercise those
+   branches against the real thing.
 7. **Docs** — if the public API, dependency list, or design rationale changes, update
    [README.md](README.md) (quickstart, API reference table, and "Core concepts" as relevant).
 
@@ -189,6 +200,7 @@ src/
     geometry.py         # cell_polygon (generated on demand, nothing stored)
     neighbours.py       # get_neighbours, distance, k_ring
     batch.py            # numpy-vectorised equivalents of the scalar API
+    points.py           # Shapely/geopandas points -> cell ids, EPSG:27700 only (needs Shapely)
     polyfill.py          # polygon -> hex grid (needs Shapely)
 tests/
   _geom_helpers.py      # Shapely-free area / point-in-polygon helpers, test-only
