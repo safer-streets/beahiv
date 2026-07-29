@@ -17,6 +17,7 @@ from .cell_id import (
     R_MASK,
     R_OFFSET,
     SIDE_LENGTH_MASK,
+    SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
     UINT64_MASK,
     CellIndex,
@@ -55,8 +56,8 @@ def encode_morton(
     side_length: int,
     orientation: Orientation = Orientation.FLAT,
 ) -> int:
-    if not (1 <= side_length <= SIDE_LENGTH_MASK):
-        raise ValueError(f"side_length must be in [1, {SIDE_LENGTH_MASK}], got {side_length}")
+    if not (1 <= side_length <= SIDE_LENGTH_MAX):
+        raise ValueError(f"side_length must be in [1, {SIDE_LENGTH_MAX}], got {side_length}")
 
     q_enc = q + Q_OFFSET
     r_enc = r + R_OFFSET

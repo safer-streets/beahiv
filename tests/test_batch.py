@@ -9,6 +9,7 @@ from beahiv.batch import (
     encode_batch,
     latlon_to_cell_batch,
 )
+from beahiv.cell_id import SIDE_LENGTH_MASK, SIDE_LENGTH_MAX
 from beahiv.geo import bng_to_cell, centroid, latlon_to_cell
 
 
@@ -22,6 +23,21 @@ def test_encode_batch_matches_scalar_encode():
     scalar_ids = [encode(int(qi), int(ri), side_length, Orientation.POINTY) for qi, ri in zip(q, r, strict=True)]
 
     assert list(batch_ids.astype(object)) == scalar_ids
+
+
+@pytest.mark.parametrize("side_length", [0, SIDE_LENGTH_MAX + 1, SIDE_LENGTH_MASK])
+def test_encode_batch_rejects_side_lengths_the_scalar_path_rejects(side_length):
+    """Scalar/batch parity on validation, not just on the formula.
+
+    side_length doesn't fill its field, so an unchecked oversized value would
+    overflow into the orientation bit instead of being masked off.
+    """
+    q = np.array([0, 1])
+    r = np.array([0, 1])
+    with pytest.raises(ValueError):
+        encode_batch(q, r, side_length, Orientation.FLAT)
+    with pytest.raises(ValueError):
+        encode(0, 0, side_length, Orientation.FLAT)
 
 
 def test_decode_batch_matches_scalar_decode():

@@ -64,6 +64,13 @@ field) should get a directly corresponding test rather than being covered incide
 
 ## Developer Rules
 
+- **DO NOT READ `.env` FILES.** Never open, `cat`, `grep`, or otherwise read `.env`, `.env.*`, or
+  `.envrc` — in this repo, a parent directory, or anywhere else. They hold live credentials (API
+  keys, tokens, connection strings), and anything read lands in a conversation transcript that is
+  stored and may be processed downstream. This holds even when asked to "check the config" or debug
+  a credential problem: report what is missing by name and let the human inspect the value. The same
+  goes for any other secret store — `~/.aws/credentials`, `~/.ssh/`, `*.pem`, `secrets.*`. If a
+  secret does end up exposed, say so plainly and recommend rotating it.
 - **EPSG:27700 is the native CRS; WGS84 is accepted only at the boundary.** All indexing, geometry,
   and arithmetic happens in EPSG:27700 metres. Only `geo.py` and its vectorised mirror `batch.py`
   import `pyproj` and project; everything else — `cell_id.py`, `coords.py`, `geometry.py`,
@@ -135,9 +142,14 @@ When reviewing a PR or diff, check:
    `geometry.py`) has a matching change in `batch.py`, and vice versa, with a test that compares
    them directly (see `test_batch.py`'s `*_matches_scalar` tests) — not just independent test
    coverage of each.
-4. **Bit budget** — any change to `Q_BITS`/`R_BITS`/`SIDE_LENGTH_BITS` in `cell_id.py` keeps the
-   64-bit total exact (there's an `assert` for this — don't relax it) and re-validates the
-   full-GB-extent-at-1m-resolution test in `test_cell_id.py`.
+4. **Bit budget** — any change to `Q_BITS`/`R_BITS`/`SIDE_LENGTH_BITS`/`RESERVED_BITS` in
+   `cell_id.py` keeps the 64-bit total exact (there's an `assert` for this — don't relax it) and
+   re-validates the full-GB-extent-at-1m-resolution test in `test_cell_id.py`. Two invariants
+   ride on this layout and each has a test: the reserved bits stay at the most significant end
+   (so every id fits a *signed* int64), and `SIDE_LENGTH_MAX` stays at or below
+   `SIDE_LENGTH_MASK` — side_length is the one field whose limit is a range check rather than
+   its bit width, so an oversized value overflows into the orientation bit instead of being
+   masked off. Every encode path must check it, `encode_batch` included.
 5. **Dispatch typing** — a new scalar/array dual-mode function uses `@overload` +
    `numpy.typing.ArrayLike`, matching `latlon_to_cell`/`bng_to_cell`/`centroid`, not a bare
    `X | np.ndarray` union return type.

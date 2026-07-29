@@ -2,16 +2,29 @@
 
 Bit layout (MSB to LSB)::
 
-    [63]      orientation   1 bit   (see Orientation)
-    [62..43]  side_length  20 bits  (unsigned metres, 1..SIDE_LENGTH_MAX)
+    [63..61]  reserved      3 bits  (always zero)
+    [60]      orientation   1 bit   (see Orientation)
+    [59..43]  side_length  17 bits  (unsigned metres, 1..SIDE_LENGTH_MAX)
     [42..22]  q_enc        21 bits  (q + Q_OFFSET)
     [21..0]   r_enc        22 bits  (r + R_OFFSET)
 
 Side length is stored directly (in whole metres) rather than as an index
 into a resolution table, so any grid spacing that fits the bit budget is
-representable without a lookup table. q/r get 21/22 bits (not stored
-per-orientation) which comfortably covers all of Great Britain down to
-~1m side length -- far finer than the 25m floor anticipated by the spec.
+representable without a lookup table. It is capped at 100km: a hexagon that
+size has an area larger than Wales, so nothing coarser is a meaningful unit
+inside GB, and the cap is what frees the top three bits.
+
+Those three are left reserved at the most significant end rather than spent,
+which puts every cell id below 2**61 -- comfortably inside a *signed* 64-bit
+integer, so consumers can store ids in a plain int64/BIGINT column instead of
+needing an unsigned type or a hex string. They are held for future use, such
+as flagging optional Morton encoding: a Morton id and a plain id are currently
+indistinguishable, so decoding one with the wrong function silently yields
+wrong q/r rather than an error.
+
+q/r get 21/22 bits (not stored per-orientation) which comfortably covers all
+of Great Britain down to ~1m side length -- far finer than the 25m floor
+anticipated by the spec.
 """
 
 from dataclasses import dataclass
@@ -20,25 +33,33 @@ from .orientation import Orientation
 
 R_BITS = 22
 Q_BITS = 21
-SIDE_LENGTH_BITS = 20
+SIDE_LENGTH_BITS = 17
 ORIENTATION_BITS = 1
+RESERVED_BITS = 3
 
-assert R_BITS + Q_BITS + SIDE_LENGTH_BITS + ORIENTATION_BITS == 64
+assert R_BITS + Q_BITS + SIDE_LENGTH_BITS + ORIENTATION_BITS + RESERVED_BITS == 64
 
 R_SHIFT = 0
 Q_SHIFT = R_BITS
 SIDE_LENGTH_SHIFT = R_BITS + Q_BITS
 ORIENTATION_SHIFT = R_BITS + Q_BITS + SIDE_LENGTH_BITS
+RESERVED_SHIFT = ORIENTATION_SHIFT + ORIENTATION_BITS
 
 R_MASK = (1 << R_BITS) - 1
 Q_MASK = (1 << Q_BITS) - 1
 SIDE_LENGTH_MASK = (1 << SIDE_LENGTH_BITS) - 1
 ORIENTATION_MASK = (1 << ORIENTATION_BITS) - 1
+RESERVED_MASK = (1 << RESERVED_BITS) - 1
 
 R_OFFSET = 1 << (R_BITS - 1)
 Q_OFFSET = 1 << (Q_BITS - 1)
 
-SIDE_LENGTH_MAX = SIDE_LENGTH_MASK
+SIDE_LENGTH_MAX = 100_000
+
+# unlike q/r, side_length doesn't use its whole field -- the cap is the limit,
+# not the mask, and encode() must check against the cap or a larger value would
+# silently overflow into the orientation bit
+assert SIDE_LENGTH_MAX <= SIDE_LENGTH_MASK
 
 UINT64_MASK = (1 << 64) - 1
 
