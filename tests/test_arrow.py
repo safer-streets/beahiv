@@ -10,7 +10,7 @@ import pyarrow as pa
 import pytest
 
 from beahiv import Orientation, bng_to_cell, latlon_to_cell
-from beahiv.cell_id import INVALID_CELL_ID
+from beahiv.cell_id import INVALID_CELL_ID, ORIENTATION_SHIFT
 
 SIDE = 202
 
@@ -69,8 +69,13 @@ def test_numpy_and_scalar_returns_are_unchanged(fn, a, b):
 
 
 def test_arrow_return_dtype_is_uint64():
-    """The ids need all 64 bits — a signed narrowing would corrupt FLAT ids, which set bit 63."""
+    """Arrow gets uint64 back, and every id fits a signed 64-bit column too.
+
+    The reserved bits sit above the orientation bit, so no id reaches bit 63 and
+    a consumer storing these as int64/BIGINT can't misread one as negative.
+    """
     result = bng_to_cell(pa.array(_BNG[0]), pa.array(_BNG[1]), SIDE, Orientation.FLAT)
 
     assert result.type == pa.uint64()
-    assert all(cell > 2**63 for cell in result.to_pylist())  # FLAT sets the orientation bit
+    assert all(cell >> ORIENTATION_SHIFT & 1 for cell in result.to_pylist())  # FLAT sets it
+    assert all(cell < 2**63 for cell in result.to_pylist())

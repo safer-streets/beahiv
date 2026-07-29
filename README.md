@@ -117,11 +117,18 @@ beahiv.distance(cell_id, other)  # hex grid distance between two cells
 
 `side_length` must be a whole number of metres, not an index into a fixed
 resolution table -- unlike H3's 16 discrete resolutions, any integer
-satisfying `1 <= side_length <= 1,048,575` (`SIDE_LENGTH_MAX` in
-`cell_id.py`, the 20-bit ceiling) is a valid grid to index against, in
-either orientation. `encode`/`encode_morton` raise `ValueError` outside
-that range: `side_length <= 0` isn't a size, and anything above the
-ceiling doesn't fit the 20-bit field.
+satisfying `1 <= side_length <= 100,000` (`SIDE_LENGTH_MAX` in
+`cell_id.py`) is a valid grid to index against, in either orientation.
+`encode`/`encode_morton` raise `ValueError` outside that range:
+`side_length <= 0` isn't a size, and 100km is where cell sizes stop being
+meaningful units for Great Britain — a hexagon with a 100km side has an
+area of about 26,000km², larger than Wales.
+
+The cap is deliberately *below* what the 17-bit field could hold
+(`SIDE_LENGTH_MASK`, 131,071), so it is the range check and not the bit
+width that enforces it — an unchecked oversized value would overflow into
+the orientation bit rather than being harmlessly masked off. `encode`,
+`encode_morton` and `encode_batch` all check.
 
 Two things this does *not* enforce:
 
@@ -175,11 +182,18 @@ cell for every point, with no ambiguity at cell boundaries.
 Every cell is a single `uint64`, reversible with no lookup table:
 
 ```text
-bit 63      orientation   1 bit    0 = POINTY, 1 = FLAT
-bits 62-43  side_length  20 bits   whole metres, 1..1,048,575
+bits 63-61  reserved      3 bits   always zero
+bit 60      orientation   1 bit    0 = POINTY, 1 = FLAT
+bits 59-43  side_length  17 bits   whole metres, 1..100,000
 bits 42-22  q (offset)   21 bits   q + Q_OFFSET
 bits 21-0   r (offset)   22 bits   r + R_OFFSET
 ```
+
+The three reserved bits sit at the most significant end, which means every
+cell id is below `2**61` and so fits a **signed** 64-bit integer. Consumers
+can store ids in a plain `int64`/`BIGINT` column rather than needing an
+unsigned type or a hex string. They are masked off on decode rather than
+validated — no `encode` can set them.
 
 `side_length` is stored directly as a literal metre value rather than an
 index into a resolution table, so any grid spacing that fits the bit

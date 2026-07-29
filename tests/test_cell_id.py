@@ -3,7 +3,14 @@ import random
 import pytest
 
 from beahiv import CellIndex, Orientation, decode, encode
-from beahiv.cell_id import Q_OFFSET, R_OFFSET, SIDE_LENGTH_MAX
+from beahiv.cell_id import (
+    Q_OFFSET,
+    R_OFFSET,
+    RESERVED_MASK,
+    RESERVED_SHIFT,
+    SIDE_LENGTH_MASK,
+    SIDE_LENGTH_MAX,
+)
 from beahiv.coords import cartesian_to_axial
 
 
@@ -59,6 +66,34 @@ def test_cell_id_fits_uint64():
     for q, r, side_length, orientation in _random_cells(500, seed=1):
         cell_id = encode(q, r, side_length, orientation)
         assert 0 <= cell_id < 2**64
+
+
+def test_reserved_bits_are_never_set():
+    for q, r, side_length, orientation in _random_cells(500, seed=2):
+        cell_id = encode(q, r, side_length, orientation)
+        assert (cell_id >> RESERVED_SHIFT) & RESERVED_MASK == 0
+
+
+def test_cell_id_fits_signed_int64():
+    """The reserved bits sit at the top, so ids stay positive in an int64 column.
+
+    This is what lets consumers store ids as a plain BIGINT rather than an
+    unsigned type or a hex string.
+    """
+    for q, r, side_length, orientation in _random_cells(500, seed=3):
+        cell_id = encode(q, r, side_length, orientation)
+        assert 0 <= cell_id < 2**63
+
+
+def test_side_length_cap_is_below_its_field_capacity():
+    """A side_length above the cap but inside the 17-bit field must still raise.
+
+    Nothing masks it off, so were it encoded it would decode back intact and
+    look valid -- it is only the cap that keeps 100km the coarsest grid.
+    """
+    assert SIDE_LENGTH_MAX < SIDE_LENGTH_MASK
+    with pytest.raises(ValueError):
+        encode(0, 0, SIDE_LENGTH_MASK)
 
 
 @pytest.mark.parametrize(

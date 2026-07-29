@@ -20,6 +20,7 @@ from .cell_id import (
     R_MASK,
     R_OFFSET,
     SIDE_LENGTH_MASK,
+    SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
     UINT64_MASK,
 )
@@ -114,6 +115,12 @@ def encode_batch(
 ) -> np.ndarray:
     q = np.asarray(q, dtype=np.int64)
     r = np.asarray(r, dtype=np.int64)
+
+    # side_length doesn't fill its field, so an oversized one would overflow into
+    # the orientation bit rather than being masked off -- one scalar check per
+    # call, not per row, so the vectorised path pays nothing for it
+    if not (1 <= side_length <= SIDE_LENGTH_MAX):
+        raise ValueError(f"side_length must be in [1, {SIDE_LENGTH_MAX}], got {side_length}")
 
     q_enc = (q + Q_OFFSET).astype(np.uint64)
     r_enc = (r + R_OFFSET).astype(np.uint64)

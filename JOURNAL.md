@@ -7,6 +7,50 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Cap `side_length` at 100km, reserve the freed bits at the MSB end
+
+- **Why** — the 20-bit literal-metres field allowed `1..1,048,575`, so a 100km and a 99.999km
+  grid were both valid. Those are distinct non-nesting lattices that no operation can combine
+  (`distance` raises across side lengths, `k_ring` can't span them), for a difference no analysis
+  could see. The ceiling was also larger than Great Britain.
+- **What**
+  - [cell_id.py](src/beahiv/cell_id.py): `SIDE_LENGTH_BITS` 20 → 17 and `SIDE_LENGTH_MAX` →
+    `100_000`; new `RESERVED_BITS`/`RESERVED_SHIFT`/`RESERVED_MASK` occupying bits 63-61.
+    `ORIENTATION_SHIFT` moves 63 → 60; q/r shifts and widths are untouched.
+  - [morton.py](src/beahiv/morton.py): validated against `SIDE_LENGTH_MASK` where `cell_id.py`
+    used `SIDE_LENGTH_MAX` — the two were equal before, so the drift was invisible. Now the cap.
+  - [batch.py](src/beahiv/batch.py): `encode_batch` never validated `side_length` at all, so the
+    array paths accepted what the scalar path rejected. One scalar check per call, not per row.
+  - Tests: reserved bits never set, ids fit a signed int64, the cap holds below the field width,
+    and batch/scalar reject the same side lengths. `test_arrow.py` asserted FLAT ids exceed
+    `2**63` — true only while orientation was bit 63; it now checks the orientation bit by shift
+    and asserts ids stay under `2**63`.
+- **Design decisions**
+  - **Reserved bits at the MSB end, not spent on q/r.** Puts every id below `2**61`, so ids fit a
+    *signed* int64 — consumers get a plain `BIGINT` column instead of an unsigned type or a hex
+    string. Spending them on q/r would buy nothing: 21/22 already covers GB down to a 0.445m side
+    length (bound by FLAT's `q`, needing `700000/1.5` cells against a capacity of 1,048,575),
+    which is well under the 1m floor.
+  - **The cap is a range check, not a field width.** 100,000 sits below the 17-bit
+    `SIDE_LENGTH_MASK` of 131,071, so nothing masks an oversized value off — it would overflow
+    into the orientation bit. That's why every encode path checks, and why an `assert` ties
+    `SIDE_LENGTH_MAX <= SIDE_LENGTH_MASK`.
+  - **Reserved bits are masked off on decode, not validated.** No encode can set them, and a
+    check would cost `decode_batch` a whole extra pass over the array.
+- **Follow-ups**
+  - **Every FLAT cell id changes value** (orientation moved from bit 63 to 60); POINTY ids are
+    unchanged for any side length within the new cap. `safer-streets-tooling` keeps `SIDE_LENGTH
+    = 202` and needs no code change, but persisted `crime_counts_beahiv_202` / `beahiv_202_*`
+    tables hold stale ids and must be rebuilt. Its tests recompute expectations from beahiv's own
+    encoder rather than hard-coding ids, so they pass after a rebuild.
+  - Now that ids fit int64, `beahiv_counts` storing `spatial_id` as zero-padded hex could become a
+    `BIGINT` column. Not done here — it's a downstream schema change, and the H3 tables use the
+    same hex convention for a consistent `spatial_id` type across grids.
+  - A significant-figures ladder (3 digits + a power-of-ten exponent, so 1234m and 99,999m are
+    rejected outright rather than merely capped) was prototyped and backed out in favour of this
+    smaller change. It cost ~25-35ns per encode via a 2800-entry lookup table, or 39-167ns
+    computed arithmetically, against a ~250ns baseline encode.
+
 ## `point_to_cell` — encode Shapely/geopandas point geometry
 
 - **Why** — point data arrives from geopandas as a geometry column, not as separate x/y sequences.
