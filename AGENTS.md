@@ -64,6 +64,13 @@ field) should get a directly corresponding test rather than being covered incide
 
 ## Developer Rules
 
+- **DO NOT READ `.env` FILES.** Never open, `cat`, `grep`, or otherwise read `.env`, `.env.*`, or
+  `.envrc` — in this repo, a parent directory, or anywhere else. They hold live credentials (API
+  keys, tokens, connection strings), and anything read lands in a conversation transcript that is
+  stored and may be processed downstream. This holds even when asked to "check the config" or debug
+  a credential problem: report what is missing by name and let the human inspect the value. The same
+  goes for any other secret store — `~/.aws/credentials`, `~/.ssh/`, `*.pem`, `secrets.*`. If a
+  secret does end up exposed, say so plainly and recommend rotating it.
 - **EPSG:27700 is the native CRS; WGS84 is accepted only at the boundary.** All indexing, geometry,
   and arithmetic happens in EPSG:27700 metres. Only `geo.py` and its vectorised mirror `batch.py`
   import `pyproj` and project; everything else — `cell_id.py`, `coords.py`, `geometry.py`,
