@@ -18,7 +18,7 @@ def test_overlap_cells_all_intersect_polygon(orientation):
 
     assert cells
     for cell_id in cells:
-        hexagon = Polygon(cell_polygon(cell_id))
+        hexagon = cell_polygon(cell_id)
         assert hexagon.intersects(polygon)
 
 
@@ -28,7 +28,7 @@ def test_overlap_covers_every_point_in_polygon():
     side_length = 150
 
     cells = polyfill(polygon, side_length, Orientation.FLAT, predicate="overlap")
-    hexagons = [Polygon(cell_polygon(c)) for c in cells]
+    hexagons = [cell_polygon(c) for c in cells]
 
     for x in range(10, 1000, 37):
         for y in range(10, 1000, 41):

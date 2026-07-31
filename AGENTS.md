@@ -21,7 +21,7 @@ The library is small enough to read in full; do that before extending it. Key mo
 | [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex` |
 | [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
 | [geo.py](src/beahiv/geo.py) | Public geographic interface: `latlon_to_cell`, `bng_to_cell`, `centroid` (WGS84 ↔ EPSG:27700 ↔ cell id) |
-| [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry: `cell_polygon` (nothing stored) |
+| [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry: `cell_polygon`/`cell_polygons` (nothing stored), returned as Shapely `Polygon`(s) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
 | [batch.py](src/beahiv/batch.py) | numpy-vectorised equivalents of the scalar API, for bulk encode/decode |
 | [points.py](src/beahiv/points.py) | `point_to_cell` — Shapely/geopandas point geometry (EPSG:27700 only) → cell ids (needs Shapely) |
@@ -111,11 +111,14 @@ field) should get a directly corresponding test rather than being covered incide
   the negative (else) branch, because "not (A and B)" doesn't imply "not A" for either variable
   individually. If you add a fourth dispatching function, follow the existing `@overload` pattern
   in [geo.py](src/beahiv/geo.py) rather than a bare union.
-- **`shapely` is a core dependency, not optional**, despite only `polyfill.py` using it — `polyfill`
-  is exported eagerly from `beahiv/__init__.py`, so `import beahiv` always needs it installed. This
-  was a deliberate tradeoff (flat top-level API over a shapely-free `import beahiv`); don't
-  "fix" it by moving `shapely` back to an extra without also reverting the eager top-level export,
-  or `import beahiv` will break for everyone relying on `beahiv.polyfill`.
+- **`shapely` is a core dependency, not optional.** `geometry.py`'s `cell_polygon`/`cell_polygons`
+  return Shapely `Polygon` objects (not raw vertex tuples — a plain vertex list has no guarantee
+  of forming a valid, closed ring, whereas a `Polygon` enforces that structure), and both are
+  exported eagerly from `beahiv/__init__.py` alongside `polyfill`, so `import beahiv` always needs
+  Shapely installed. This was a deliberate tradeoff (flat top-level API, real geometry objects over
+  a shapely-free `import beahiv`); don't "fix" it by moving `shapely` back to an extra without also
+  reverting the eager top-level exports, or `import beahiv` will break for everyone relying on
+  `beahiv.cell_polygon`/`beahiv.polyfill`.
 - **`beahiv.polyfill` is both a submodule name and a top-level function name.** `from beahiv import
   polyfill` and `beahiv.polyfill(...)` (after `import beahiv`) both correctly resolve to the
   function. The only broken pattern is `import beahiv.polyfill` followed by
@@ -153,12 +156,15 @@ When reviewing a PR or diff, check:
 5. **Dispatch typing** — a new scalar/array dual-mode function uses `@overload` +
    `numpy.typing.ArrayLike`, matching `latlon_to_cell`/`bng_to_cell`/`centroid`, not a bare
    `X | np.ndarray` union return type.
-6. **Optional-dependency boundary** — `polyfill.py` and `points.py` are the only modules allowed to
-   import Shapely; don't let a Shapely import creep into `cell_id.py`, `coords.py`, `geo.py`,
-   `geometry.py`, `neighbours.py`, `morton.py`, or `batch.py`. Nothing may import geopandas at all,
-   including those two — `points.py` duck-types on `.geometry`/`.crs` instead, and geopandas is a
-   dev dependency purely so [tests/test_points.py](tests/test_points.py) can exercise those
-   branches against the real thing.
+6. **Shapely/geopandas boundary** — `polyfill.py`, `points.py`, and `geometry.py` are the only
+   modules allowed to import Shapely (the first two for point-in-polygon queries and point
+   geometry input, `geometry.py` only to construct/return `Polygon` objects — it still runs no
+   spatial predicate itself); don't let a Shapely import creep into `cell_id.py`, `coords.py`,
+   `geo.py`, `neighbours.py`, `morton.py`, or `batch.py`. Nothing may import geopandas at all,
+   anywhere, including `points.py`'s own tests: `points.py` duck-types on `.geometry`/`.crs` for
+   geopandas-style containers, but [tests/test_points.py](tests/test_points.py) only exercises the
+   plain-Shapely surface (a `Point`, or a list/ndarray of them) — the container-duck-typing branches
+   aren't covered by this test suite at all.
 7. **Docs** — if the public API, dependency list, or design rationale changes, update
    [README.md](README.md) (quickstart, API reference table, and "Core concepts" as relevant).
 
@@ -209,7 +215,7 @@ src/
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
     morton.py          # Z-order variant of encode/decode
     geo.py             # WGS84 <-> EPSG:27700 <-> cell id (latlon_to_cell, bng_to_cell, centroid)
-    geometry.py         # cell_polygon (generated on demand, nothing stored)
+    geometry.py         # cell_polygon / cell_polygons -> Shapely Polygon(s), generated on demand (needs Shapely)
     neighbours.py       # get_neighbours, distance, k_ring
     batch.py            # numpy-vectorised equivalents of the scalar API
     points.py           # Shapely/geopandas points -> cell ids, EPSG:27700 only (needs Shapely)

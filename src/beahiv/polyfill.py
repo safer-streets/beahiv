@@ -7,7 +7,7 @@ the one bulk operation that needs a full point-in-polygon query, done via
 Shapely rather than anything homegrown.
 """
 
-from shapely import Point, Polygon, prepared
+from shapely import Point, prepared
 from shapely.geometry.base import BaseGeometry
 
 from .cell_id import encode
@@ -73,12 +73,12 @@ def polyfill(
     for q in range(q_min, q_max + 1):
         for r in range(r_min, r_max + 1):
             cell_id = encode(q, r, side_length, orientation)
-            if predicate == "center":
+            if predicate in ("centre", "center"):
                 hit = prepared_polygon.contains(Point(axial_to_cartesian(q, r, side_length, orientation)))
             elif predicate == "full":
-                hit = prepared_polygon.contains(Polygon(cell_polygon(cell_id)))
+                hit = prepared_polygon.contains(cell_polygon(cell_id))
             else:
-                hit = prepared_polygon.intersects(Polygon(cell_polygon(cell_id)))
+                hit = prepared_polygon.intersects(cell_polygon(cell_id))
             if hit:
                 cells.append(cell_id)
     return cells

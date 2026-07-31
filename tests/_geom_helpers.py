@@ -1,8 +1,10 @@
 """Plain-Python geometry helpers used only by tests.
 
-Deliberately independent of Shapely: the spec requires the core indexing
-code to have no Shapely dependency, and these helpers double as an
-external check on cell_polygon rather than reusing library internals.
+Deliberately independent of Shapely -- these operate on plain vertex lists
+(callers unwrap `cell_polygon`'s `Polygon` via `.exterior.coords` first) and
+implement their own area/point-in-polygon math, rather than reusing
+Shapely's `.area`/`.contains`, so they double as an external check on
+`cell_polygon` instead of validating it against itself.
 """
 
 import math

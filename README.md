@@ -83,9 +83,10 @@ is already in EPSG:27700 and the analysis never leaves Great Britain.
 uv sync
 ```
 
-Dependencies are `numpy`, `pyproj`, and `shapely`. Only `polyfill` (see
-below) touches Shapely -- the rest of the indexing code never does any
-point-in-polygon query.
+Dependencies are `numpy`, `pyproj`, and `shapely`. `polyfill` (see below)
+is the only thing that does a point-in-polygon query; `geometry.py`'s
+`cell_polygon`/`cell_polygons` also use Shapely, but only to return cell
+outlines as `Polygon` objects, not to run any spatial predicate.
 
 There is one extra, `beahiv[arrow]`, which pins `pyarrow` for the
 Arrow-in/Arrow-out encoding path (see [pyarrow](#pyarrow) below). It is
@@ -226,6 +227,17 @@ Polygons are never stored — `cell_polygon` regenerates six vertices on
 demand from the cell centre, at 30/90/150/210/270/330° (POINTY) or
 0/60/120/180/240/300° (FLAT).
 
+`cell_polygons` is the vectorised sibling for many cells at once, built on
+`batch.cell_centre_batch` for the centre lookup:
+
+```python
+beahiv.cell_polygons(cell_ids)  # one list of 6 vertices per cell id, same order
+```
+
+Every cell passed in must share the same `side_length` and `orientation` —
+same restriction as `cell_centre_batch`, since a single angle set and radius
+only apply to one grid at a time. An empty input returns `[]`.
+
 ## Bulk operations
 
 `latlon_to_cell`, `bng_to_cell`, and `centroid` accept arrays transparently —
@@ -340,7 +352,7 @@ requires.
 
 `beahiv.polyfill` covers a Shapely polygon with hex cells — the one bulk
 operation that does need a point-in-polygon query, so it's kept out of
-the core indexing modules (`geo.py`, `geometry.py`, ...), which never do
+the core indexing modules (`geo.py`, `coords.py`, ...), which never do
 spatial joins:
 
 ```python
@@ -379,7 +391,8 @@ Property tests cover:
 | `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow) |
 | `point_to_cell(points, side_length, orientation)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700 only |
 | `centroid(cell_id, latlon=False)` | Cell centre → EPSG:27700 (default) or WGS84 (`latlon=True`) |
-| `cell_polygon(cell_id)` | Six vertices in EPSG:27700 |
+| `cell_polygon(cell_id)` | Cell outline as a Shapely `Polygon`, in EPSG:27700 |
+| `cell_polygons(cell_ids)` | Vectorised `cell_polygon` — one same-grid cell id list in, one `Polygon` per cell out |
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |
 | `distance(cell_a, cell_b)` | Hex grid distance |
 | `k_ring(cell_id, k)` | All cells within `k` hops |
