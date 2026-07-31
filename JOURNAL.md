@@ -7,6 +7,98 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Remove geopandas as a dependency entirely — test only the plain-Shapely surface
+
+- **Why** — a plain `uv sync` pulled in geopandas (and transitively pandas, pyogrio) purely to run
+  `tests/test_points.py`'s duck-typing checks, even for changes nowhere near `points.py`. This is
+  the exact risk flagged as a follow-up when geopandas was first added ("CI installs are heavier
+  across the three-OS matrix... if it bites, the geopandas-specific tests could move behind an
+  `importorskip`"). Two intermediate approaches were tried and dropped: an `importorskip`'d
+  dependency-group still needed installing to actually run those tests anywhere, and a
+  `_FakeGeoSeries`/`_FakeGeoDataFrame` stand-in (implementing `.crs`/`.geometry`/`__array__`) added
+  real weight to the test file for a container interface no test in the suite is required to cover.
+  Settled on simply not testing the `.crs`/`.geometry` container-duck-typing branches at all —
+  `point_to_cell` accepts plain `Point`s and lists/ndarrays of them independently of that path, and
+  that's the surface this suite now covers.
+- **What**
+  - `pyproject.toml`: no geopandas anywhere, dev group or otherwise.
+  - [tests/test_points.py](tests/test_points.py): dropped every test that needed a `.crs`/`.geometry`
+    container — `test_accepts_geoseries_geodataframe_geometryarray_ndarray_and_list` (replaced with
+    a slimmer `test_accepts_list_and_ndarray_of_points`), `test_non_default_index_does_not_shift_results`,
+    `test_rejects_a_declared_crs_that_is_not_bng`, `test_reprojecting_to_bng_first_is_accepted`, and
+    `test_crs_guard_accepts_bng_declared_without_an_epsg_code`. Every remaining test now builds
+    input from a plain `list[Point]`/`np.ndarray` via a local `_points()` helper (replacing the old
+    `_geoseries()`). Two cases (`test_missing_and_empty_points_become_invalid_cell_id`, the masked-
+    path test) pass an explicit `np.array(..., dtype=object)` rather than a raw `list[Point | None]`
+    — `ty` doesn't accept a list containing `None` alongside `Point` against `ArrayLike`'s nested-
+    sequence branch, only its `_SupportsArray` branch (which an object ndarray satisfies directly).
+  - [.github/workflows/lint-test.yml](.github/workflows/lint-test.yml): back to a plain `uv sync`.
+  - `AGENTS.md`: reviewer checklist item 6 updated — geopandas isn't imported anywhere including
+    `points.py`'s tests, and the container-duck-typing branches are explicitly noted as uncovered
+    by this suite (not silently assumed correct).
+- **Follow-ups** — `points.py`'s `.crs`/`.geometry` duck-typing (the actual `_check_crs` raising
+  path, `GeoDataFrame`-style `.geometry` extraction, index-independence) has no test coverage at
+  all now. Deliberately accepted rather than deferred — flagging here so it isn't mistaken for an
+  oversight if that logic ever breaks.
+
+## `cell_polygon`/`cell_polygons` return Shapely `Polygon` objects, not vertex tuples
+
+- **Why** — callers needing an actual `Polygon` (`polyfill.py`, tests) had to wrap the output
+  themselves with `Polygon(cell_polygon(cell_id))`. Worse, a raw `list[tuple[float, float]]` has
+  no guarantee of forming a valid, closed ring — a `Polygon` enforces that structure; the tuple
+  list was just deferring that guarantee to every call site.
+- **What**
+  - [geometry.py](src/beahiv/geometry.py): `cell_polygon` returns `shapely.Polygon` instead of
+    `list[tuple[float, float]]`; `cell_polygons` returns `list[Polygon]`. Both now import `shapely`.
+  - [polyfill.py](src/beahiv/polyfill.py): dropped the now-redundant `Polygon(cell_polygon(...))`
+    wrapping — `cell_polygon` already returns a `Polygon`. Removed the now-unused `Polygon` import.
+  - `tests/test_geometry.py`/`tests/test_polyfill.py`: updated for the new return type; added a
+    local `_vertices()` helper in `test_geometry.py` that unwraps a `Polygon` back to a plain
+    vertex list (via `.exterior.coords`, dropping the closing repeated vertex) before handing it to
+    the Shapely-free helpers in `tests/_geom_helpers.py`, which are unchanged and still operate on
+    plain tuples.
+  - `AGENTS.md`/`README.md`: updated the Shapely-import boundary — `geometry.py` is now a third
+    module (with `polyfill.py`/`points.py`) allowed to import Shapely, since it needs `Polygon` to
+    construct its return value. It still runs no spatial predicate itself, so the "core indexing
+    code does no point-in-polygon query" rule (the actual design goal) is unchanged; only the
+    narrower "no Shapely import at all" reading of it was reversed.
+- **Design decisions**
+  - **`geometry.py` may now import Shapely, but still may not query it.** The previous rule
+    conflated two separate things: not doing spatial joins/predicates outside `polyfill.py`, and
+    not importing Shapely at all outside `polyfill.py`/`points.py`. Only the first is an actual
+    design goal (see README's "Why not H3?" / dependency-light rationale); the second was
+    incidental and is what changed here.
+  - **`tests/_geom_helpers.py` stays Shapely-free.** Its job is independent verification math
+    (shoelace area, ray-casting point-in-polygon) that doesn't lean on Shapely's own
+    `.area`/`.contains` to check `cell_polygon`'s output — that's unrelated to whether `cell_polygon`
+    itself returns a `Polygon`, so callers unwrap to plain tuples before calling in.
+
+## Implement `cell_polygons`, the vectorised sibling of `cell_polygon`
+
+- **Why** — `geometry.py` shipped a `cell_polygons(cell_ids)` stub (docstring only, no body) as a
+  placeholder for a bulk polygon lookup; nothing called it yet.
+- **What**
+  - [geometry.py](src/beahiv/geometry.py): implemented `cell_polygons`. Decodes/centres the whole
+    batch via `batch.cell_centre_batch` (one call, not a Python loop over `cell_polygon`), then
+    builds all six vertices per cell with a single vectorised `cos`/`sin` pass over the one
+    orientation's angle set. Empty input returns `[]` before touching `cell_centre_batch` (which
+    itself raises `IndexError` on an empty array — not something worth working around inside it).
+  - `__init__.py`: exported `cell_polygons` alongside `cell_polygon`.
+  - `README.md`/`AGENTS.md`: documented the new function and its restriction.
+  - `tests/test_geometry.py`: parity test against `cell_polygon` per id (mirrors `test_batch.py`'s
+    `*_matches_scalar` pattern), plus empty-input, mixed-orientation, and mixed-side_length cases.
+- **Design decisions**
+  - **Same-side_length/orientation restriction as `cell_centre_batch`, not a per-cell mixed-grid
+    version.** A single angle set and radius only apply to one grid at a time; supporting mixed
+    grids would mean re-deriving `axial_to_cartesian` per-element in numpy (formula duplication
+    `batch.py` already carries) for a use case nothing calls. Reusing `cell_centre_batch` keeps
+    the vectorised centre formula in one place instead of a second copy in `geometry.py`.
+  - **Delegates to `batch.cell_centre_batch` rather than looping over `cell_polygon`.** Per the
+    "Scalar and batch implementations are intentionally separate code" rule, but the loop-over-
+    scalar shortcut here would specifically defeat the point of a vectorised version — `geo.py`'s
+    `centroid` already establishes the precedent of a non-`batch.py` module delegating to
+    `batch.py` for its array branch.
+
 ## Cap `side_length` at 100km, reserve the freed bits at the MSB end
 
 - **Why** — the 20-bit literal-metres field allowed `1..1,048,575`, so a 100km and a 99.999km

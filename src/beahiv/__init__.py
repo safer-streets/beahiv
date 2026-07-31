@@ -3,7 +3,7 @@ equal-area hexagonal grid for EPSG:27700."""
 
 from .cell_id import CellIndex, decode, encode
 from .geo import bng_to_cell, centroid, latlon_to_cell
-from .geometry import cell_polygon
+from .geometry import cell_polygon, cell_polygons
 from .morton import decode_morton, encode_morton
 from .neighbours import NEIGHBOUR_OFFSETS, distance, get_neighbours, k_ring
 from .orientation import Orientation
@@ -16,6 +16,7 @@ __all__ = [
     "encode",
     "decode",
     "cell_polygon",
+    "cell_polygons",
     "get_neighbours",
     "NEIGHBOUR_OFFSETS",
     "distance",
