@@ -13,10 +13,10 @@ NEIGHBOUR_OFFSETS: tuple[tuple[int, int], ...] = (
 )
 
 
-def get_neighbours(cell_id: int) -> list[int]:
+def get_neighbours(cell_id: int) -> tuple[int, ...]:
     """Return the six neighbouring cell ids, same side_length/orientation."""
     idx = decode(cell_id)
-    return [encode(idx.q + dq, idx.r + dr, idx.side_length, idx.orientation) for dq, dr in NEIGHBOUR_OFFSETS]
+    return tuple(encode(idx.q + dq, idx.r + dr, idx.side_length, idx.orientation) for dq, dr in NEIGHBOUR_OFFSETS)
 
 
 def distance(cell_a: int, cell_b: int) -> int:
@@ -32,7 +32,7 @@ def distance(cell_a: int, cell_b: int) -> int:
     return (abs(ax - bx) + abs(ay - by) + abs(az - bz)) // 2
 
 
-def k_ring(cell_id: int, k: int) -> list[int]:
+def k_ring(cell_id: int, k: int) -> tuple[int, ...]:
     """Return all cells within hex distance k of cell_id (including itself)."""
     if k < 0:
         raise ValueError("k must be >= 0")
@@ -44,4 +44,4 @@ def k_ring(cell_id: int, k: int) -> list[int]:
         r_hi = min(k, -dq + k)
         for dr in range(r_lo, r_hi + 1):
             cells.append(encode(idx.q + dq, idx.r + dr, idx.side_length, idx.orientation))
-    return cells
+    return tuple(cells)

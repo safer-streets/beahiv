@@ -7,6 +7,223 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## `decode` gets a rejection contract to match `encode`'s
+
+- **Why** — `encode` validated everything; `decode` validated only that the id fit in uint64, so it
+  accepted ids `encode` could never have produced and returned plausible-looking nonsense for them.
+  The reachable case: `latlon_to_cell`/`bng_to_cell`/`point_to_cell` emit `INVALID_CELL_ID` for
+  missing input, and `decode(INVALID_CELL_ID)` returned `CellIndex(q=-1048576, r=-2097152,
+  side_length=0)` rather than failing — so a batch decoded without filtering the sentinels out
+  yielded silent garbage at those rows.
+- **What**
+  - [cell_id.py](src/beahiv/cell_id.py): new `validate_cell_id(cell_id) -> int` — rejects a
+    non-uint64 id, `INVALID_CELL_ID`, a non-zero reserved field, and a `side_length` outside
+    `[1, SIDE_LENGTH_MAX]`; returns the validated side_length, since it has already extracted it.
+    `decode` now calls it. Fixed `CellIndex.encode`'s return annotation, which said `CellIndex`
+    while returning `int` (the module's one outstanding `ty` error; the method has no callers, so
+    it had never been exercised).
+  - [morton.py](src/beahiv/morton.py): `decode_morton` calls the same helper — orientation,
+    side_length and reserved sit in identical positions in both layouts, so the two decoders reject
+    exactly the same ids.
+  - [batch.py](src/beahiv/batch.py): `decode_batch` mirrors it vectorised (two array comparisons for
+    the whole batch, not a per-row call), and names `INVALID_CELL_ID` in the error when the batch
+    contains any, that being the overwhelmingly likely cause.
+  - [__init__.py](src/beahiv/__init__.py): exported `INVALID_CELL_ID` — callers now have to filter
+    on it, so it can't stay a private detail of `cell_id`.
+  - Tests: reserved-bit and side_length rejection plus the sentinel in `test_cell_id.py`; the
+    scalar/batch rejection-parity and empty-array cases in `test_batch.py`; the same rejection set
+    for `decode_morton` in `test_morton.py`.
+  - README.md (batch section, API table) and AGENTS.md (invariant 4) document the decode side.
+- **Design decisions**
+  - **`decode(INVALID_CELL_ID)` raises rather than returning a distinguishable "null" `CellIndex`.**
+    Consistent with every other malformed id, and a sentinel is a *row-level* concern: the caller
+    already knows which rows were missing and can filter before decoding. The cost is that a
+    round trip through `latlon_to_cell` on data with gaps now needs an explicit filter, which the
+    README shows.
+  - **Rejecting a non-zero reserved field is the point of reserving it.** The bits are earmarked for
+    flagging Morton encoding; a decoder that ignored unknown bits could never start honouring such a
+    flag without breaking ids already in the wild. Recorded in AGENTS.md so it isn't "relaxed" later.
+  - **`validate_cell_id` returns the side_length** instead of being a bare check, so the callers
+    don't re-extract the field it just read. It's public (no leading underscore) because
+    `decode_morton` is in another module and the check is a genuine part of the id contract.
+
+## AGENTS.md: state the secrets rule as "never in the context window"
+
+- **Why** — the existing rule was phrased as "DO NOT READ `.env` FILES", which names one file type
+  and one verb. The actual requirement is that no secret *value* reaches the prompt or context
+  window by any route, and a rule stated as a filename invites the obvious workarounds (`printenv`,
+  a script that prints the value, `git show` of a commit containing one).
+- **What** — [AGENTS.md](AGENTS.md) "Developer Rules": first bullet rewritten around the value
+  rather than the file, with sub-bullets for the secret stores not to read, the indirect reads that
+  count as reading, the prohibition on *writing* a secret into a command line/fixture/commit
+  message/journal entry, and the unchanged "name the variable, don't quote it" escape hatch for
+  debugging credential problems. Adds that a secret which does reach the context must be treated as
+  compromised and rotated, since discarding the output doesn't undo the transcript.
+
+## Overlapping parents/children — singular/plural split, no `include_partial` flag
+
+- **Why** — the same-centroid-only lookup answers a question almost no caller asks: most cells have
+  no 2x cell sharing their centroid, so `get_parent` mostly failed. The cells at 2x/0.5x
+  `side_length` that *overlap* a given cell always exist, and are what a caller resizing by a factor
+  of two actually wants. Both behaviours are worth having, so the question was how to select
+  between them: an `include_partial: bool` flag was tried first and rejected (see below).
+- **What**
+  - [hierarchy.py](src/beahiv/hierarchy.py): four scalar functions, no flags.
+    `get_parent(cell_id) -> int | None` and `get_child(cell_id) -> int` are the same-centroid
+    partner; `get_parents`/`get_children` return every cell at the target `side_length` overlapping
+    the input — 1 parent when `q`/`r` are both even and 2 otherwise (never empty), always 7 children
+    (`k_ring(get_child(cell_id), 1)`). The vectorised `get_parents` is gone; so is the commented-out
+    vectorised block at the foot of the module, which described the removed API and had come to
+    share a name with a live function.
+  - [__init__.py](src/beahiv/__init__.py): exports all four.
+  - `tests/test_hierarchy.py`: rewritten. Parity/`None` and even-`side_length` contracts, centroid
+    equality via `coords.axial_to_cartesian`, `get_parent`/`get_child` round trip, and the cap
+    rejections; then geometric tests for the plural pair — each result set is *exactly* the
+    brute-forced set of target-`side_length` cells with real overlap, its union covers the cell, and
+    the children's union overspills it by 75% of its area.
+  - README.md ("Parent/child at 2x/0.5x `side_length`", API table, `resize_cell` cross-ref) and
+    AGENTS.md (module table, repository layout) rewritten to match.
+- **Design decisions**
+  - **Split rather than an `include_partial` flag.** The flag changed what the return *meant*, not a
+    detail of it — cardinality differed (0-or-1 vs 1-or-2; 1 vs 7), so callers branched on the
+    result anyway, and no caller would ever pass a variable there. Singular/plural already carries
+    the distinction, so the names do the work the flag was doing.
+  - **`get_parent` returns `None` rather than raising**, unlike the version before it: having no
+    same-centroid parent is the common case (3 of 4 parities), not an error. `get_child` still
+    returns a bare `int` — it always exists when `side_length` is even.
+  - **An odd `side_length` raises while odd `q`/`r` doesn't.** Not an inconsistency: side lengths
+    are integer metres, so an odd one means the 0.5x grid doesn't exist at all and there is nothing
+    to be inside, whereas odd `q`/`r` means a grid that does exist just doesn't line up. Documented
+    in both the module docstring and README, since the asymmetry invites exactly that objection.
+  - **Overlap is measured against a fraction of the cell's area, not against zero.** Two cells
+    sharing an edge intersect in a ~1e-29-of-area sliver under shapely's floating-point arithmetic,
+    which reads as a spurious third parent in ~8% of cells. `tests/test_hierarchy.py` uses
+    `OVERLAP_TOL = 1e-12` relative to the cell's own area, with the reason recorded at the constant.
+- **Follow-ups**
+  - `src/beahiv/cell_id.py` (unrelated WIP in the same working tree) has a `ty` error on
+    `CellIndex.encode`'s declared return type; left alone.
+
+## `resize_cell` — polyfill-based covering at a new size; drop `get_children`
+
+- **Why** — `get_children`, the vectorised same-centroid child lookup added in the previous entry,
+  was judged not useful: it only ever returns the *one* fine cell whose centroid happens to exactly
+  coincide with the parent's, which is a narrow arithmetic curiosity, not a way to find "the cells
+  that cover this one at a different size" -- the thing callers actually want when resizing. The
+  scalar `get_child` stays as a cheap single-cell same-centroid check, but its bulk form is dropped.
+  In its place: a `polyfill` variant seeded by an existing cell's own polygon rather than an
+  arbitrary one, which works for *any* new `side_length` (not just an even one) and in *either*
+  direction (finer or coarser) via ordinary point-in-polygon coverage instead of exact centroid
+  matching.
+- **What**
+  - [hierarchy.py](src/beahiv/hierarchy.py): removed `get_children` and the now-single-use
+    `_single_side_length_and_orientation` helper's sharing rationale (inlined back into
+    `get_parents`, its only remaining caller). `get_parent`/`get_child`/`get_parents` unchanged.
+  - [polyfill.py](src/beahiv/polyfill.py): new `resize_cell(cell_id, new_side_length,
+    orientation=None, predicate="overlap")` — decodes `cell_id`, defaults `orientation` to the
+    decoded cell's own when not given, and calls `polyfill(cell_polygon(cell_id), new_side_length,
+    orientation, predicate)`. Same pattern as `bbox_fill`: no new geometry logic, delegates entirely
+    to the existing `polyfill`.
+  - [__init__.py](src/beahiv/__init__.py): dropped `get_children`, exported `resize_cell`.
+  - `tests/test_hierarchy.py`: removed the `get_children` tests.
+  - `tests/test_polyfill.py`: equivalence test against `polyfill(cell_polygon(cell_id), ...)`
+    directly; a finer-resize test confirming a sampled grid of points inside the original hexagon
+    are all covered by the returned finer cells; a coarser-resize test (`new_side_length` larger
+    than the original, explicitly requested as a supported case); side_length/orientation
+    passthrough; invalid-predicate rejection.
+  - README.md/AGENTS.md: replaced the vectorised-`get_children` documentation with `resize_cell`,
+    documented alongside `bbox_fill`.
+- **Design decisions**
+  - **`resize_cell` permits `new_side_length` larger than the original, not just smaller.** Explicit
+    requirement: it's what makes this a real replacement for the "parent" half of the concept
+    `get_children` failed to cover, not just a "children" replacement. Nothing about `polyfill` or
+    `cell_polygon` assumes one is bigger than the other, so this needed no extra code, only a test
+    confirming it.
+  - **`resize_cell`'s `orientation` defaults to `cell_id`'s own but can be overridden.** The common
+    case is resizing within the same grid family, so defaulting to the source cell's own
+    orientation avoids most callers needing to think about it -- but the covering-based approach
+    (unlike the same-centroid arithmetic it replaces) has no inherent reason to require the same
+    orientation, so a caller who does want a different-orientation covering isn't blocked from it.
+- **Follow-ups** — none.
+
+## `bbox_fill` — polyfill convenience wrapper for an axis-aligned bounding box
+
+- **Why** — the common case of filling a plain rectangle (not an arbitrary polygon) with hex cells
+  required building a throwaway Shapely `Polygon` first just to call `polyfill`.
+- **What**
+  - [polyfill.py](src/beahiv/polyfill.py): new `bbox_fill(minx, miny, maxx, maxy, side_length,
+    orientation, predicate)`, delegating entirely to the existing `polyfill(shapely.box(...), ...)`
+    — no new geometry logic, same predicate semantics/validation/edge cases.
+  - [__init__.py](src/beahiv/__init__.py): exported `bbox_fill`.
+  - `tests/test_polyfill.py`: parametrized equivalence test against `polyfill` of the same square
+    across all three predicates and both orientations; side_length/orientation passthrough;
+    invalid-predicate rejection; a degenerate (zero-area) box case.
+  - README.md/AGENTS.md: documented alongside `polyfill`.
+- **Design decisions**
+  - **Delegates to `polyfill` via `shapely.box`, rather than a hand-rolled rectangle-hexagon
+    intersection test.** A bounding box needs no point-in-polygon query in principle (axis-aligned
+    rectangle containment/intersection is just interval arithmetic), but reimplementing "overlap"
+    correctly without Shapely means a proper separating-axis test against a hexagon's 3 unique
+    edge normals — real geometry code with its own bug surface, for a case Shapely already handles
+    exactly and cheaply (`prepared.prep` on a 4-vertex box is trivial). Reuse won over a
+    dependency-free reimplementation here.
+  - **`bbox_fill` stayed in `polyfill.py`, not a new Shapely-free module.** It still imports
+    Shapely (via `polyfill`), so it belongs with the one module already carrying that dependency,
+    not alongside the core arithmetic-only modules `polyfill.py` itself is kept separate from.
+  - Degenerate box note (see the test): `shapely.box(0, 0, 0, 0)` is a valid zero-area `Polygon`,
+    not Shapely's `is_empty` — so `predicate="overlap"` can still return the one cell touching
+    that point, while `"full"`/`"center"` correctly return nothing. Not a bug, just worth spelling
+    out since it looks surprising from the outside.
+
+## Same-centroid parent/child lookups — `get_parent`/`get_child`
+
+- **Why** — README/AGENTS.md previously stated, as a deliberate design position, that hex grids
+  have no parent/child relationship for any integer scale factor. An earlier cut of this change
+  added a bit-flagged "hierarchical" cell mode (a reserved id bit, power-of-2-restricted
+  `side_length`, a 4-children-per-parent scheme) — but that was more machinery than the underlying
+  fact needs: `axial_to_cartesian(q, r, side_length, ...)` is linear in `(q, r)`, so whether a
+  same-centroid cell exists at `2x`/`0.5x` `side_length` is a plain integer-parity question with no
+  encoding changes required at all. The flag, the power-of-2 restriction, and the bit-layout change
+  were dropped in favour of two plain lookup functions.
+- **What**
+  - New [hierarchy.py](src/beahiv/hierarchy.py): `get_parent(cell_id)` returns the cell at
+    `2 * side_length` sharing this cell's exact centroid — exists iff `q` and `r` are both even
+    (`(Q, R) = (q // 2, r // 2)`, an exact integer solution, not a rounding/nearest-cell lookup).
+    `get_child(cell_id)` returns the cell at `side_length / 2` sharing the centroid — exists iff
+    `side_length` is even (`(2q, 2r)`, always an exact integer). Both raise `ValueError` when no
+    such cell exists, matching the rest of this codebase's style (`encode`, `distance`) over
+    returning `None`.
+  - [__init__.py](src/beahiv/__init__.py): exported `get_parent`, `get_child`.
+  - `tests/test_hierarchy.py`: parity-of-q/r rejection for `get_parent`, even-side_length rejection
+    for `get_child`, centroid equality (via `coords.axial_to_cartesian`) for both directions,
+    `get_child(get_parent(cell)) == cell` when both are defined, and the `SIDE_LENGTH_MAX` boundary.
+  - README.md: replaced the old blanket "no parent/child relationship, ever" bullet with a
+    "Same-centroid parent/child" section describing exactly what does and doesn't exist; added
+    `get_parent`/`get_child` to the API reference table. AGENTS.md: new module-table row and
+    repository-layout line.
+  - No change anywhere else: `cell_id.py`'s bit layout, `CellIndex`, `encode`/`decode`, `batch.py`,
+    `neighbours.py`, and `geo.py` are all back to their pre-hierarchical-mode state — there is
+    nothing for any of them to carry through, since a cell's `(q, r, side_length, orientation)`
+    alone already determines whether a same-centroid partner exists.
+- **Design decisions**
+  - **No id-level flag or restriction at all.** The bit-flagged design would have required every
+    caller to opt in with `hierarchical=True` at encode time before `get_parent`/`get_child` could
+    be used on a cell, and restricted `side_length` to a power of 2 even for callers who never
+    touch these functions. Since the same-centroid question is fully decidable from a plain
+    `CellIndex` already, that restriction bought nothing and was dropped.
+  - **`get_parent`/`get_child` raise rather than return `None`.** Matches `encode` (out-of-range
+    `q`/`r`/`side_length`) and `distance` (mismatched `side_length`/`orientation`) — this codebase's
+    existing convention for "this input doesn't satisfy a precondition", not a new one.
+  - **No 4-children scheme.** The bit-flagged design's `get_children` returned 4 cells per parent —
+    one exact-centroid child plus 3 neighbours each only half-covered by the parent's hexagon. That
+    is a real, verified geometric fact, but it's a *tiling* concept, not a same-centroid one, and
+    conflating the two made the simpler question harder to use. `get_child` returns exactly the one
+    cell that actually shares the centroid.
+- **Follow-ups**
+  - ~~No vectorised `get_parent`/`get_child` in `batch.py` — scalar only.~~ Done — see the
+    `get_parents`/`get_children` entry above.
+  - `bbox_fill` (see the entry below) is unaffected by any of this — it doesn't touch
+    `hierarchy.py`.
+
 ## Remove geopandas as a dependency entirely — test only the plain-Shapely surface
 
 - **Why** — a plain `uv sync` pulled in geopandas (and transitively pandas, pyogrio) purely to run

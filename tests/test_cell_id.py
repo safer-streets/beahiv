@@ -4,12 +4,14 @@ import pytest
 
 from beahiv import CellIndex, Orientation, decode, encode
 from beahiv.cell_id import (
+    INVALID_CELL_ID,
     Q_OFFSET,
     R_OFFSET,
     RESERVED_MASK,
     RESERVED_SHIFT,
     SIDE_LENGTH_MASK,
     SIDE_LENGTH_MAX,
+    SIDE_LENGTH_SHIFT,
 )
 from beahiv.coords import cartesian_to_axial
 
@@ -117,3 +119,34 @@ def test_decode_rejects_non_uint64():
         decode(-1)
     with pytest.raises(ValueError):
         decode(2**64)
+
+
+def test_decode_rejects_ids_with_reserved_bits_set():
+    """encode never sets them (see test_reserved_bits_are_never_set), so decode must never
+    accept them -- that is what keeps the field free to mean something later."""
+    cell_id = encode(4, -6, 100)
+    decode(cell_id)  # doesn't raise
+    for pattern in range(1, RESERVED_MASK + 1):
+        with pytest.raises(ValueError, match="reserved bits"):
+            decode(cell_id | (pattern << RESERVED_SHIFT))
+
+
+@pytest.mark.parametrize("side_length", [0, SIDE_LENGTH_MAX + 1, SIDE_LENGTH_MASK])
+def test_decode_rejects_side_lengths_encode_would_have_rejected(side_length):
+    """side_length is the one field whose limit is a range check, not its bit width, so a
+    decodable bit pattern is not necessarily an encodable value."""
+    cell_id = encode(4, -6, 100) & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT) | (side_length << SIDE_LENGTH_SHIFT)
+    with pytest.raises(ValueError, match="side_length"):
+        decode(cell_id)
+
+
+def test_decode_rejects_the_invalid_cell_id_sentinel():
+    """The *_to_cell functions emit INVALID_CELL_ID for missing input, so it reaches decode by
+    ordinary use -- it must fail loudly rather than decode to plausible-looking coordinates."""
+    with pytest.raises(ValueError, match="INVALID_CELL_ID"):
+        decode(INVALID_CELL_ID)
+
+
+def test_decode_accepts_exactly_what_encode_produces():
+    for q, r, side_length, orientation in _random_cells(500, seed=9):
+        assert decode(encode(q, r, side_length, orientation)).encode() == encode(q, r, side_length, orientation)

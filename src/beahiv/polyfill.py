@@ -7,15 +7,15 @@ the one bulk operation that needs a full point-in-polygon query, done via
 Shapely rather than anything homegrown.
 """
 
-from shapely import Point, prepared
+from shapely import Point, box, prepared
 from shapely.geometry.base import BaseGeometry
 
-from .cell_id import encode
+from .cell_id import decode, encode
 from .coords import axial_to_cartesian, cartesian_to_axial
 from .geometry import cell_polygon
 from .orientation import Orientation
 
-_PREDICATES = ("overlap", "center", "full")
+_PREDICATES = ("overlap", "centre", "center", "full")
 
 
 def _axial_bounds(
@@ -82,3 +82,47 @@ def polyfill(
             if hit:
                 cells.append(cell_id)
     return cells
+
+
+def bbox_fill(
+    minx: float,
+    miny: float,
+    maxx: float,
+    maxy: float,
+    side_length: int,
+    orientation: Orientation = Orientation.FLAT,
+    predicate: str = "overlap",
+) -> list[int]:
+    """Return the ids of every (side_length, orientation) hex cell covering the axis-aligned
+    bounding box (minx, miny, maxx, maxy), in EPSG:27700 metres.
+
+    A thin convenience wrapper around `polyfill` for the common case of an axis-aligned box rather
+    than an arbitrary polygon -- same `predicate` semantics, same validation, same edge cases
+    (an empty/degenerate box, an invalid predicate).
+    """
+    return polyfill(box(minx, miny, maxx, maxy), side_length, orientation, predicate)
+
+
+def resize_cell(
+    cell_id: int,
+    new_side_length: int,
+    orientation: Orientation | None = None,
+    predicate: str = "centre",
+) -> list[int]:
+    """Return the ids of every `new_side_length` cell covering the hexagon `cell_id` spans.
+
+    A thin convenience wrapper around `polyfill`, seeded by `cell_polygon(cell_id)` instead of an
+    arbitrary polygon -- same `predicate` semantics. `new_side_length` may be smaller (a
+    finer-grained covering, the useful replacement for a same-centroid "children" lookup) or larger
+    (a coarser covering -- including the trivial case of finding the one coarser cell containing
+    this one) than `cell_id`'s own `side_length`; both directions are ordinary `polyfill` calls,
+    nothing here assumes one is bigger than the other.
+
+    `orientation` defaults to `cell_id`'s own orientation -- the common case of resizing within the
+    same grid family -- but can be overridden to cover the cell with a grid of the other
+    orientation instead.
+    """
+    idx = decode(cell_id)
+    if orientation is None:
+        orientation = idx.orientation
+    return polyfill(cell_polygon(cell_id), new_side_length, orientation, predicate)

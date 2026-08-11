@@ -20,12 +20,16 @@ integer, so consumers can store ids in a plain int64/BIGINT column instead of
 needing an unsigned type or a hex string. They are held for future use, such
 as flagging optional Morton encoding: a Morton id and a plain id are currently
 indistinguishable, so decoding one with the wrong function silently yields
-wrong q/r rather than an error.
+wrong q/r rather than an error. `encode` never sets them and `decode` refuses
+an id that has them set, which is what keeps them free to be given a meaning
+later -- a decoder that ignored unknown bits could never start honouring one.
 
 q/r get 21/22 bits (not stored per-orientation) which comfortably covers all
 of Great Britain down to ~1m side length -- far finer than the 25m floor
 anticipated by the spec.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -75,6 +79,15 @@ class CellIndex:
     side_length: int
     orientation: Orientation
 
+    def dq(self, i: int) -> CellIndex:
+        return CellIndex(self.q + i, self.r, self.side_length, self.orientation)
+
+    def dr(self, i: int) -> CellIndex:
+        return CellIndex(self.q, self.r + i, self.side_length, self.orientation)
+
+    def encode(self) -> int:
+        return encode(self.q, self.r, self.side_length, self.orientation)
+
 
 def encode(
     q: int,
@@ -97,13 +110,39 @@ def encode(
     return cell_id & UINT64_MASK
 
 
-def decode(cell_id: int) -> CellIndex:
-    """Recover (q, r, side_length, orientation) from a uint64 cell id."""
+def validate_cell_id(cell_id: int) -> int:
+    """Reject any id `encode` could not have produced, and return its side_length.
+
+    q/r fill their fields exactly, so every bit pattern is a valid coordinate and there is nothing
+    to check there. The other two fields are not self-validating: side_length's limit is a range
+    check rather than its bit width, and the reserved field is only meaningful while it stays zero
+    (see the module docstring -- a future flag there is what would finally make a Morton id
+    distinguishable from a plain one, which requires decode to be looking at it).
+
+    Shared by `decode` and `morton.decode_morton`, which differ only in how they read q/r.
+    `batch.decode_batch` re-implements this vectorised rather than calling it per row.
+    """
     if not (0 <= cell_id <= UINT64_MASK):
         raise ValueError("cell_id must fit within uint64")
+    if cell_id == INVALID_CELL_ID:
+        raise ValueError("cell_id is INVALID_CELL_ID, the missing-input sentinel -- filter these out before decoding")
+    if (cell_id >> RESERVED_SHIFT) & RESERVED_MASK:
+        raise ValueError(f"cell_id has reserved bits set, so is not a valid cell id: {cell_id:#018x}")
+
+    side_length = (cell_id >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
+    if not (1 <= side_length <= SIDE_LENGTH_MAX):
+        raise ValueError(f"cell_id has side_length {side_length}, outside the encodable [1, {SIDE_LENGTH_MAX}]")
+    return side_length
+
+
+def decode(cell_id: int) -> CellIndex:
+    """Recover (q, r, side_length, orientation) from a uint64 cell id.
+
+    Raises ValueError for any id `encode` could not have produced -- see `validate_cell_id`.
+    """
+    side_length = validate_cell_id(cell_id)
 
     orientation = Orientation((cell_id >> ORIENTATION_SHIFT) & ORIENTATION_MASK)
-    side_length = (cell_id >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
     q_enc = (cell_id >> Q_SHIFT) & Q_MASK
     r_enc = (cell_id >> R_SHIFT) & R_MASK
 

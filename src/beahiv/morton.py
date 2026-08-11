@@ -16,11 +16,11 @@ from .cell_id import (
     R_BITS,
     R_MASK,
     R_OFFSET,
-    SIDE_LENGTH_MASK,
     SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
     UINT64_MASK,
     CellIndex,
+    validate_cell_id,
 )
 from .orientation import Orientation
 
@@ -73,11 +73,15 @@ def encode_morton(
 
 
 def decode_morton(cell_id: int) -> CellIndex:
-    if not (0 <= cell_id <= UINT64_MASK):
-        raise ValueError("cell_id must fit within uint64")
+    """Recover (q, r, side_length, orientation) from a Morton-ordered cell id.
+
+    Rejects the same ids `decode` does (see `cell_id.validate_cell_id`) -- the orientation,
+    side_length and reserved fields sit in the same places either way. It still cannot tell a
+    Morton id from a plain one: both are well-formed here, and only the q/r bits differ.
+    """
+    side_length = validate_cell_id(cell_id)
 
     orientation = Orientation((cell_id >> ORIENTATION_SHIFT) & ORIENTATION_MASK)
-    side_length = (cell_id >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
     morton = cell_id & _MORTON_MASK
 
     q_enc, r_enc = _deinterleave(morton, Q_BITS, R_BITS)

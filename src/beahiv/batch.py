@@ -19,6 +19,8 @@ from .cell_id import (
     Q_SHIFT,
     R_MASK,
     R_OFFSET,
+    RESERVED_MASK,
+    RESERVED_SHIFT,
     SIDE_LENGTH_MASK,
     SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
@@ -138,11 +140,30 @@ def encode_batch(
 
 
 def decode_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return (q, r, side_length, orientation) arrays for a batch of cell ids."""
+    """Return (q, r, side_length, orientation) arrays for a batch of cell ids.
+
+    Rejects the same ids scalar `decode` does (see `cell_id.validate_cell_id`), vectorised: two
+    array comparisons for the whole batch rather than a per-row call. Note that the *_to_cell
+    functions emit INVALID_CELL_ID for missing input, so an array built from data with gaps must
+    have them filtered out before it can be decoded.
+    """
     cell_ids = np.asarray(cell_ids, dtype=np.uint64)
 
     orientation = ((cell_ids >> np.uint64(ORIENTATION_SHIFT)) & np.uint64(ORIENTATION_MASK)).astype(np.uint8)
     side_length = ((cell_ids >> np.uint64(SIDE_LENGTH_SHIFT)) & np.uint64(SIDE_LENGTH_MASK)).astype(np.int64)
+
+    reserved = (cell_ids >> np.uint64(RESERVED_SHIFT)) & np.uint64(RESERVED_MASK)
+    if np.any(reserved):
+        raise ValueError(f"{int(np.count_nonzero(reserved))} cell id(s) have reserved bits set")
+    invalid = (side_length < 1) | (side_length > SIDE_LENGTH_MAX)
+    if np.any(invalid):
+        n_sentinel = int(np.count_nonzero(cell_ids == INVALID_CELL_ID))
+        detail = f" ({n_sentinel} of them INVALID_CELL_ID)" if n_sentinel else ""
+        raise ValueError(
+            f"{int(np.count_nonzero(invalid))} cell id(s) have a side_length outside "
+            f"the encodable [1, {SIDE_LENGTH_MAX}]{detail}"
+        )
+
     q_enc = ((cell_ids >> np.uint64(Q_SHIFT)) & np.uint64(Q_MASK)).astype(np.int64)
     r_enc = (cell_ids & np.uint64(R_MASK)).astype(np.int64)
 

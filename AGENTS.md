@@ -19,13 +19,14 @@ The library is small enough to read in full; do that before extending it. Key mo
 | [orientation.py](src/beahiv/orientation.py) | `Orientation` enum (POINTY/FLAT) — see the "Orientation" gotcha below |
 | [coords.py](src/beahiv/coords.py) | Scalar axial ↔ Cartesian (EPSG:27700 metres) conversion, cube-coordinate rounding |
 | [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex` |
+| [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (no vectorised forms) |
 | [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
 | [geo.py](src/beahiv/geo.py) | Public geographic interface: `latlon_to_cell`, `bng_to_cell`, `centroid` (WGS84 ↔ EPSG:27700 ↔ cell id) |
 | [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry: `cell_polygon`/`cell_polygons` (nothing stored), returned as Shapely `Polygon`(s) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
 | [batch.py](src/beahiv/batch.py) | numpy-vectorised equivalents of the scalar API, for bulk encode/decode |
 | [points.py](src/beahiv/points.py) | `point_to_cell` — Shapely/geopandas point geometry (EPSG:27700 only) → cell ids (needs Shapely) |
-| [polyfill.py](src/beahiv/polyfill.py) | `polyfill(polygon, ...)` — the one function that does point-in-polygon queries (needs Shapely) |
+| [polyfill.py](src/beahiv/polyfill.py) | `polyfill(polygon, ...)` — the one function that does point-in-polygon queries (needs Shapely); `bbox_fill(...)`/`resize_cell(...)` are convenience wrappers around it, seeded by a bounding box / an existing cell's own polygon |
 
 Tests are in [tests/](tests/), one `test_*.py` per module plus [tests/_geom_helpers.py](tests/_geom_helpers.py)
 (deliberately Shapely-free geometry helpers — see below).
@@ -64,13 +65,23 @@ field) should get a directly corresponding test rather than being covered incide
 
 ## Developer Rules
 
-- **DO NOT READ `.env` FILES.** Never open, `cat`, `grep`, or otherwise read `.env`, `.env.*`, or
-  `.envrc` — in this repo, a parent directory, or anywhere else. They hold live credentials (API
-  keys, tokens, connection strings), and anything read lands in a conversation transcript that is
-  stored and may be processed downstream. This holds even when asked to "check the config" or debug
-  a credential problem: report what is missing by name and let the human inspect the value. The same
-  goes for any other secret store — `~/.aws/credentials`, `~/.ssh/`, `*.pem`, `secrets.*`. If a
-  secret does end up exposed, say so plainly and recommend rotating it.
+- **NO SECRET VALUE MAY EVER ENTER YOUR PROMPT OR CONTEXT WINDOW.** This is the rule; not reading
+  `.env` is just its most common application. A credential that reaches the context has landed in a
+  conversation transcript that is stored and may be processed downstream — that cannot be undone by
+  discarding the output, and the secret must then be treated as compromised.
+  - **Never read a secret store.** No opening, `cat`, `grep`, `head`, editor, or file-read tool on
+    `.env`, `.env.*`, `.envrc` — in this repo, a parent directory, or anywhere else — nor on
+    `~/.aws/credentials`, `~/.ssh/`, `*.pem`, `secrets.*`, keychains, or CI secret files.
+  - **The indirect routes count as reading.** Don't run `env`/`printenv`/`set`, don't `echo $TOKEN`,
+    don't run a script or test that prints one, don't `git show`/`git log -p` a commit known to
+    contain one, and don't ask a CLI to dump a resolved config. Redirecting a secret to a file and
+    reading that file is the same act, one step removed.
+  - **Never write one out either.** No secret interpolated into a command line, a test fixture, a
+    committed file, a commit message, or a [JOURNAL.md](JOURNAL.md) entry — the transcript records
+    what you wrote as surely as what you read.
+  - This holds even when asked to "check the config" or debug a credential problem: name the
+    variable that is missing or wrong and let the human inspect its value. If a secret does reach
+    the context anyway, say so plainly, don't repeat it, and recommend rotating it.
 - **EPSG:27700 is the native CRS; WGS84 is accepted only at the boundary.** All indexing, geometry,
   and arithmetic happens in EPSG:27700 metres. Only `geo.py` and its vectorised mirror `batch.py`
   import `pyproj` and project; everything else — `cell_id.py`, `coords.py`, `geometry.py`,
@@ -152,7 +163,11 @@ When reviewing a PR or diff, check:
    (so every id fits a *signed* int64), and `SIDE_LENGTH_MAX` stays at or below
    `SIDE_LENGTH_MASK` — side_length is the one field whose limit is a range check rather than
    its bit width, so an oversized value overflows into the orientation bit instead of being
-   masked off. Every encode path must check it, `encode_batch` included.
+   masked off. Every encode path must check it, `encode_batch` included, and every decode path
+   must reject an id carrying one — `cell_id.validate_cell_id` is the shared scalar check
+   (`decode`, `decode_morton`), and `decode_batch` mirrors it vectorised. The same applies to a
+   non-zero reserved field: `decode` refusing it is what keeps those bits free to mean something
+   later, so don't relax it to "ignore unknown bits".
 5. **Dispatch typing** — a new scalar/array dual-mode function uses `@overload` +
    `numpy.typing.ArrayLike`, matching `latlon_to_cell`/`bng_to_cell`/`centroid`, not a bare
    `X | np.ndarray` union return type.
@@ -213,13 +228,14 @@ src/
     orientation.py     # Orientation enum (POINTY/FLAT)
     coords.py          # scalar axial <-> Cartesian conversion
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
+    hierarchy.py        # get_parent(s) / get_child(ren) -- 2x/0.5x side_length: same-centroid (singular) or overlapping (plural)
     morton.py          # Z-order variant of encode/decode
     geo.py             # WGS84 <-> EPSG:27700 <-> cell id (latlon_to_cell, bng_to_cell, centroid)
     geometry.py         # cell_polygon / cell_polygons -> Shapely Polygon(s), generated on demand (needs Shapely)
     neighbours.py       # get_neighbours, distance, k_ring
     batch.py            # numpy-vectorised equivalents of the scalar API
     points.py           # Shapely/geopandas points -> cell ids, EPSG:27700 only (needs Shapely)
-    polyfill.py          # polygon -> hex grid (needs Shapely)
+    polyfill.py          # polygon/bbox/cell -> hex grid (needs Shapely)
 tests/
   _geom_helpers.py      # Shapely-free area / point-in-polygon helpers, test-only
   test_*.py             # one per module

@@ -9,7 +9,13 @@ from beahiv.batch import (
     encode_batch,
     latlon_to_cell_batch,
 )
-from beahiv.cell_id import SIDE_LENGTH_MASK, SIDE_LENGTH_MAX
+from beahiv.cell_id import (
+    INVALID_CELL_ID,
+    RESERVED_SHIFT,
+    SIDE_LENGTH_MASK,
+    SIDE_LENGTH_MAX,
+    SIDE_LENGTH_SHIFT,
+)
 from beahiv.geo import bng_to_cell, centroid, latlon_to_cell
 
 
@@ -56,6 +62,36 @@ def test_decode_batch_matches_scalar_decode():
         assert idx.r == dr[i]
         assert idx.side_length == ds[i]
         assert idx.orientation == do[i]
+
+
+def test_decode_batch_rejects_what_scalar_decode_rejects():
+    """Scalar/batch parity applies to the rejection contract, not just the arithmetic."""
+    valid = encode(4, -6, 100)
+    rejected = [
+        valid | (0b101 << RESERVED_SHIFT),  # reserved bits set
+        valid & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT),  # side_length 0
+        valid & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT) | ((SIDE_LENGTH_MAX + 1) << SIDE_LENGTH_SHIFT),
+        INVALID_CELL_ID,
+    ]
+
+    for cell_id in rejected:
+        with pytest.raises(ValueError):
+            decode(cell_id)  # scalar rejects it ...
+        with pytest.raises(ValueError):
+            decode_batch(np.array([valid, cell_id], dtype=np.uint64))  # ... so the batch must too
+
+
+def test_decode_batch_reports_the_sentinel_by_name():
+    """The overwhelmingly likely cause of a bad id in a batch is an unfiltered missing-input
+    sentinel, so the error says so rather than only quoting an out-of-range side_length."""
+    cell_ids = np.array([encode(4, -6, 100), INVALID_CELL_ID], dtype=np.uint64)
+    with pytest.raises(ValueError, match="INVALID_CELL_ID"):
+        decode_batch(cell_ids)
+
+
+def test_decode_batch_accepts_an_empty_array():
+    dq, dr, ds, do = decode_batch(np.array([], dtype=np.uint64))
+    assert len(dq) == len(dr) == len(ds) == len(do) == 0
 
 
 def test_latlon_to_cell_batch_matches_scalar():

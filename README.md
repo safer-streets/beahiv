@@ -137,19 +137,76 @@ Two things this does *not* enforce:
   as `500.5` isn't rejected with a helpful message, it fails at the bit
   shift (`TypeError`, since Python won't `<<` a float) inside `encode`.
   Round or truncate before calling.
-- **No cross-resolution nesting -- not even at integer multiples.**
-  Cells at different `side_length` values are independent lattices
-  scaled by `s`, not levels of a hierarchy, and this isn't fixed by
-  choosing a "clean" ratio: a regular hexagon can't be exactly tiled by
-  smaller regular hexagons of the same orientation for *any* integer
-  factor, the way a square cleanly quarters for a quadtree. Picking
-  `side_length=300` as "3x" a `side_length=100` grid doesn't produce
-  9 small cells per big cell either -- most straddle the big cell's
-  boundary instead of nesting inside it. There is no parent/child
-  relationship here at all, clean-multiple or not, unlike H3's fixed
-  resolution hierarchy. Mixing side lengths in one dataset is fine as
-  long as each cell id carries its own (which it does, by construction),
-  but don't expect `k_ring`/aggregation across different side lengths.
+- **No cross-resolution nesting for arbitrary ratios.** Cells at different
+  `side_length` values are independent lattices scaled by `s`, not levels
+  of a hierarchy, and this isn't fixed by choosing a "clean" ratio: a
+  regular hexagon can't be exactly tiled by smaller regular hexagons of
+  the same orientation for an *arbitrary* integer factor, the way a
+  square cleanly quarters for a quadtree. Picking `side_length=300` as
+  "3x" a `side_length=100` grid doesn't produce 9 small cells per big
+  cell either -- most straddle the big cell's boundary instead of
+  nesting inside it. Mixing side lengths in one dataset is fine as long
+  as each cell id carries its own (which it does, by construction), but
+  don't expect `k_ring`/aggregation across arbitrary different side
+  lengths.
+- **Same-centroid 2x/0.5x lookups are the one exception** -- see
+  "Parent/child at 2x/0.5x `side_length`" below.
+
+### Parent/child at 2x/0.5x `side_length`
+
+`axial_to_cartesian` is linear in `(q, r)`, so a cell at `side_length`
+shares its *exact* centroid with a cell at `2 * side_length` if and only
+if `(q / 2, r / 2)` is itself an integer pair (`q` and `r` both even),
+and with a cell at `side_length / 2` if and only if `side_length` is
+itself even (that child is always `(2q, 2r)` -- doubling is always an
+integer, unlike halving). Neither direction needs rounding or a
+Cartesian round trip: the same-centroid partner either exists as an
+exact integer solution, or it doesn't exist at all.
+
+Singular and plural answer two different questions, and the name is the
+whole distinction. **`get_parent`/`get_child`** return that same-centroid
+partner, or nothing -- pure parity arithmetic, no geometry, a cheap way
+to ask whether a cell happens to line up exactly with the 2x/0.5x grid:
+
+```python
+cell_id = beahiv.encode(4, -6, 100)
+parent = beahiv.get_parent(cell_id)  # side_length=200, same centroid
+child = beahiv.get_child(cell_id)  # side_length=50, same centroid
+assert beahiv.get_child(parent) == cell_id
+
+beahiv.get_parent(beahiv.encode(3, -6, 100))  # None -- odd q, no same-centroid parent
+```
+
+**`get_parents`/`get_children`** return every cell at the target
+`side_length` that *overlaps* this one, as a tuple. That set always
+exists and always covers the cell, and is what you want when resizing by
+a factor of two:
+
+```python
+beahiv.get_parents(beahiv.encode(3, -6, 100))  # the 2 straddled 200m cells
+beahiv.get_parents(cell_id)  # 1 -- an even-q/r cell lies wholly inside its same-centroid parent
+beahiv.get_children(cell_id)  # 7 x 50m: the same-centroid child, plus its k_ring of 1
+```
+
+`get_parents` returns 1 id when `q` and `r` are both even (a cell sharing
+a 2x cell's centroid lies wholly inside it, with nothing to straddle) and
+2 otherwise; it is never empty. `get_children` always returns 7 -- the
+same-centroid child and the six partially contained cells ringing it,
+which cover the cell but **overspill** it by 75% of its area: half-size
+hexes cover a hexagon, they don't partition it.
+
+So neither pair is a hierarchical tiling. The same-centroid relation is
+partial (most cells have no parent), and the overlapping relation shares
+cells rather than partitioning them. For an actual covering at an
+arbitrary new size, see `resize_cell` below.
+
+An odd `side_length` raises `ValueError` from both child functions,
+rather than returning nothing the way `get_parent` does on odd `q`/`r`:
+side lengths are integer metres, so an odd one means the 0.5x grid
+doesn't exist at all and there's nothing to be inside -- a different
+failure from a cell that merely doesn't line up with a grid that does
+exist. `get_parent`/`get_parents` likewise raise when doubling
+`side_length` would exceed `SIDE_LENGTH_MAX`.
 
 ### Coordinate system
 
@@ -260,6 +317,13 @@ cell_ids = latlon_to_cell_batch(lats, lons, side_length=500)
 
 A missing coordinate (`NaN`) is an absent point rather than an error: it
 encodes to `INVALID_CELL_ID` (`0`), which no valid `encode` can produce.
+Decoding is the strict direction, though — `decode`/`decode_batch` reject
+the sentinel rather than returning coordinates for it, so filter it out
+before decoding a batch built from data with gaps:
+
+```python
+centres = beahiv.centroid(cell_ids[cell_ids != beahiv.INVALID_CELL_ID])
+```
 
 ### pyarrow
 
@@ -280,7 +344,9 @@ query engine (DuckDB, Polars), where a per-row Python call would dominate:
 con.create_function(
     "beahiv_cell",
     lambda x, y: beahiv.bng_to_cell(x, y, 202),
-    [DOUBLE, DOUBLE], UBIGINT, type="arrow",
+    [DOUBLE, DOUBLE],
+    UBIGINT,
+    type="arrow",
 )
 ```
 
@@ -365,6 +431,39 @@ matching h3's `contain` vocabulary: `"overlap"` (any part of the hex
 touches the polygon), `"center"` (hex centre inside the polygon), or
 `"full"` (hex entirely inside the polygon).
 
+For the common case of an axis-aligned bounding box rather than an
+arbitrary polygon, `beahiv.bbox_fill` is a thin convenience wrapper —
+same `predicate` semantics, no need to build a Shapely `Polygon` first:
+
+```python
+cell_ids = beahiv.bbox_fill(minx, miny, maxx, maxy, side_length=500, orientation=Orientation.FLAT)
+```
+
+For resizing a cell you already have -- covering its hexagon with cells
+at a different `side_length` -- `beahiv.resize_cell` is seeded by the
+cell's own outline (`cell_polygon`) instead of an arbitrary polygon:
+
+```python
+finer = beahiv.resize_cell(cell_id, new_side_length=50)  # a finer covering
+coarser = beahiv.resize_cell(cell_id, new_side_length=500)  # a coarser covering -- also permitted
+```
+
+`new_side_length` may be smaller or larger than `cell_id`'s own
+`side_length` -- both directions are ordinary `polyfill` calls against
+the cell's polygon, same `predicate` semantics. This is the general,
+geometry-based replacement for `get_parents`/`get_children` (previous
+section): unlike those it isn't restricted to a factor of two, doesn't
+require an even `q`/`r`/`side_length`, and always returns *something*
+covering the cell.
+
+`orientation` defaults to `cell_id`'s own orientation, but can be
+overridden to cover the cell with a grid of the other orientation
+instead:
+
+```python
+beahiv.resize_cell(cell_id, new_side_length=50, orientation=Orientation.FLAT)
+```
+
 ## Testing
 
 ```bash
@@ -386,7 +485,8 @@ Property tests cover:
 | Function | Description |
 | --- | --- |
 | `encode(q, r, side_length, orientation)` | Build a cell id |
-| `decode(cell_id)` | Recover `CellIndex(q, r, side_length, orientation)` |
+| `decode(cell_id)` | Recover `CellIndex(q, r, side_length, orientation)`; raises for any id `encode` couldn't have produced |
+| `INVALID_CELL_ID` | The all-zero sentinel emitted for missing input — filter it out before decoding |
 | `latlon_to_cell(lat, lon, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow) |
 | `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow) |
 | `point_to_cell(points, side_length, orientation)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700 only |
@@ -396,6 +496,12 @@ Property tests cover:
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |
 | `distance(cell_a, cell_b)` | Hex grid distance |
 | `k_ring(cell_id, k)` | All cells within `k` hops |
+| `get_parent(cell_id)` | Cell at 2x `side_length` sharing this cell's exact centroid, or `None` if `q`/`r` aren't both even |
+| `get_child(cell_id)` | Cell at `side_length / 2` sharing this cell's exact centroid — always `(2q, 2r)` |
+| `get_parents(cell_id)` | Every cell at 2x `side_length` overlapping this one — 1 if it nests exactly, else the 2 it straddles |
+| `get_children(cell_id)` | Every cell at `side_length / 2` overlapping this one — always 7, covering it with 75% overspill |
 | `encode_morton` / `decode_morton` | Z-order variant of `encode`/`decode` |
 | `polyfill(polygon, side_length, orientation, predicate)` | Every cell id covering a Shapely polygon |
+| `bbox_fill(minx, miny, maxx, maxy, side_length, orientation, predicate)` | Every cell id covering an axis-aligned bounding box |
+| `resize_cell(cell_id, new_side_length, orientation, predicate)` | Every `new_side_length` cell id covering `cell_id`'s hexagon -- smaller or larger than its own `side_length` |
 
