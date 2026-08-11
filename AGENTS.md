@@ -42,8 +42,11 @@ Tests are in [tests/](tests/), one `test_*.py` per module plus [tests/_geom_help
 | Install dev deps | `uv sync` (the `dev` dependency group is included by default) |
 
 CI ([.github/workflows/lint-test.yml](.github/workflows/lint-test.yml)) runs the same gates on
-push/PR, but still run them locally before considering a change complete. There is no pre-commit
-configured.
+push/PR, and [.pre-commit-config.yaml](.pre-commit-config.yaml) runs all four locally on commit
+(`uv-lock`, `ruff check --fix`, `ruff format`, `ty`, `pytest`). Still run them yourself before
+considering a change complete rather than letting the commit be the first thing that tries them —
+and note the pre-commit `ruff` hooks *write* (`--fix` and a reformat), so a commit can end up with
+content you didn't stage.
 
 ## Quality Gates
 

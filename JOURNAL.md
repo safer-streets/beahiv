@@ -7,6 +7,30 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## pre-commit runs the fourth quality gate; AGENTS.md stops denying it exists
+
+- **Why** — [.pre-commit-config.yaml](.pre-commit-config.yaml) ran `uv-lock`/`ruff check`/`ruff
+  format`/`ty` but not `pytest`, so three of the four gates in "Quality Gates" were enforced on
+  commit and the fourth wasn't — a commit could pass every hook with a failing suite, and only CI
+  would catch it. Separately, AGENTS.md's Toolchain section still said "There is no pre-commit
+  configured", which stopped being true at some point and was actively misleading.
+- **What**
+  - [.pre-commit-config.yaml](.pre-commit-config.yaml): added a `repo: local` `pytest` hook
+    (`language: system`, `entry: uv run pytest`).
+  - [AGENTS.md](AGENTS.md): Toolchain section now names the config, lists what it runs, and warns
+    that the `ruff` hooks write to the tree (`--fix` plus a reformat), so a commit can contain
+    content that was never staged.
+- **Design decisions**
+  - **`always_run: true` rather than `types: [python]`.** Scoping to Python files would skip the
+    suite for exactly the commit most able to break it silently — a `pyproject.toml` dependency
+    bump. Verified by staging a README-only change: `ruff`/`uv-lock` skip, `pytest` runs.
+  - **On commit, not pre-push.** The suite is ~0.8s, so deferring it buys nothing.
+  - **`repo: local`/`language: system`, not a hosted hook.** pytest has to run in this project's
+    own environment to import `beahiv`; an isolated hook environment wouldn't have it.
+- **Follow-ups** — the `ruff check --fix` hook rewrites staged files on commit. Left as-is (it's the
+  conventional setup and CI still runs the non-writing `ruff check`), but it does mean the committed
+  content can differ from what was reviewed; now called out in AGENTS.md rather than silently true.
+
 ## `decode` gets a rejection contract to match `encode`'s
 
 - **Why** — `encode` validated everything; `decode` validated only that the id fit in uint64, so it
