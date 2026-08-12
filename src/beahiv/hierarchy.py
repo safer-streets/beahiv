@@ -33,11 +33,13 @@ operation (see `resize_cell` for the useful, covering-based replacement), and th
 single-cell queries.
 """
 
+from typing import SupportsIndex
+
 from .cell_id import decode, encode
 from .neighbours import k_ring
 
 
-def get_parent(cell_id: int) -> int | None:
+def get_parent(cell_id: SupportsIndex) -> int | None:
     """Return the id of the cell at 2x side_length sharing this cell's exact centroid.
 
     Returns None if there is no such cell -- q and r must both be even. For the cells at 2x
@@ -51,7 +53,7 @@ def get_parent(cell_id: int) -> int | None:
     return encode(idx.q // 2, idx.r // 2, idx.side_length * 2, idx.orientation)
 
 
-def get_parents(cell_id: int) -> tuple[int, ...]:
+def get_parents(cell_id: SupportsIndex) -> tuple[int, ...]:
     """Return the ids of every cell at 2x side_length overlapping this cell.
 
     Returns the 1 cell containing this one when q and r are both even -- a cell sharing a 2x cell's
@@ -81,7 +83,7 @@ def get_parents(cell_id: int) -> tuple[int, ...]:
             )
 
 
-def get_child(cell_id: int) -> int:
+def get_child(cell_id: SupportsIndex) -> int:
     """Return the id of the cell at side_length / 2 sharing this cell's exact centroid.
 
     Always exists when side_length is even, and is always `(2q, 2r)`.
@@ -94,7 +96,7 @@ def get_child(cell_id: int) -> int:
     return encode(idx.q * 2, idx.r * 2, idx.side_length // 2, idx.orientation)
 
 
-def get_children(cell_id: int) -> tuple[int, ...]:
+def get_children(cell_id: SupportsIndex) -> tuple[int, ...]:
     """Return the ids of every cell at side_length / 2 overlapping this cell.
 
     Always 7: the same-centroid `get_child` plus the 6 partially contained cells ringing it. Their

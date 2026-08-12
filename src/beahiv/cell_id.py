@@ -27,11 +27,23 @@ later -- a decoder that ignored unknown bits could never start honouring one.
 q/r get 21/22 bits (not stored per-orientation) which comfortably covers all
 of Great Britain down to ~1m side length -- far finer than the 25m floor
 anticipated by the spec.
+
+Cell ids and coordinates are taken as `SupportsIndex` rather than `int`, and
+coerced with `operator.index` on the way in. Ids reach the scalar API as numpy
+integers routinely -- an element of a `decode_batch` result, a pandas column, a
+DuckDB/Parquet BIGINT -- and numpy's fixed-width arithmetic is wrong for this
+bit layout in both directions: `& UINT64_MASK` raises OverflowError against an
+`np.int64` operand because the mask doesn't fit one, and a `q_enc - Q_OFFSET`
+that should go negative wraps around instead under `np.uint64`. Coercing at
+these entry points is what keeps every value downstream a plain Python int, so
+`neighbours`, `hierarchy` and `polyfill` need no numpy awareness of their own.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from operator import index
+from typing import SupportsIndex
 
 from .orientation import Orientation
 
@@ -90,12 +102,19 @@ class CellIndex:
 
 
 def encode(
-    q: int,
-    r: int,
-    side_length: int,
+    q: SupportsIndex,
+    r: SupportsIndex,
+    side_length: SupportsIndex,
     orientation: Orientation = Orientation.FLAT,
 ) -> int:
-    """Encode an axial cell at a given side length/orientation into a uint64 id."""
+    """Encode an axial cell at a given side length/orientation into a uint64 id.
+
+    Accepts numpy integers as well as `int` -- see the module docstring.
+    """
+    q = index(q)
+    r = index(r)
+    side_length = index(side_length)
+
     if not (1 <= side_length <= SIDE_LENGTH_MAX):
         raise ValueError(f"side_length must be in [1, {SIDE_LENGTH_MAX}], got {side_length}")
 
@@ -110,8 +129,11 @@ def encode(
     return cell_id & UINT64_MASK
 
 
-def validate_cell_id(cell_id: int) -> int:
-    """Reject any id `encode` could not have produced, and return its side_length.
+def validate_cell_id(cell_id: SupportsIndex) -> tuple[int, int]:
+    """Reject any id `encode` could not have produced, and return it with its side_length.
+
+    The id comes back because coercing it (see the module docstring) happens here, so the caller
+    would otherwise redo it before reading q/r out of the same bits.
 
     q/r fill their fields exactly, so every bit pattern is a valid coordinate and there is nothing
     to check there. The other two fields are not self-validating: side_length's limit is a range
@@ -122,6 +144,7 @@ def validate_cell_id(cell_id: int) -> int:
     Shared by `decode` and `morton.decode_morton`, which differ only in how they read q/r.
     `batch.decode_batch` re-implements this vectorised rather than calling it per row.
     """
+    cell_id = index(cell_id)
     if not (0 <= cell_id <= UINT64_MASK):
         raise ValueError("cell_id must fit within uint64")
     if cell_id == INVALID_CELL_ID:
@@ -132,15 +155,17 @@ def validate_cell_id(cell_id: int) -> int:
     side_length = (cell_id >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
     if not (1 <= side_length <= SIDE_LENGTH_MAX):
         raise ValueError(f"cell_id has side_length {side_length}, outside the encodable [1, {SIDE_LENGTH_MAX}]")
-    return side_length
+    return cell_id, side_length
 
 
-def decode(cell_id: int) -> CellIndex:
+def decode(cell_id: SupportsIndex) -> CellIndex:
     """Recover (q, r, side_length, orientation) from a uint64 cell id.
+
+    Accepts numpy integers as well as `int` -- see the module docstring.
 
     Raises ValueError for any id `encode` could not have produced -- see `validate_cell_id`.
     """
-    side_length = validate_cell_id(cell_id)
+    cell_id, side_length = validate_cell_id(cell_id)
 
     orientation = Orientation((cell_id >> ORIENTATION_SHIFT) & ORIENTATION_MASK)
     q_enc = (cell_id >> Q_SHIFT) & Q_MASK

@@ -1,5 +1,7 @@
 import random
 
+import numpy as np
+
 from beahiv import Orientation, decode, distance, encode, get_neighbours, k_ring
 from beahiv.neighbours import NEIGHBOUR_OFFSETS
 
@@ -57,3 +59,13 @@ def test_k_ring_cells_are_within_k_hops():
     k = 4
     for cell_id in k_ring(origin, k):
         assert distance(origin, cell_id) <= k
+
+
+def test_ring_operations_accept_numpy_integer_ids():
+    """Regression: k_ring on an np.int64 id raised OverflowError, encode's `& UINT64_MASK` not
+    fitting an int64 operand."""
+    origin = encode(5, -3, 250)
+
+    assert k_ring(np.int64(origin), 2) == k_ring(origin, 2)
+    assert get_neighbours(np.int64(origin)) == get_neighbours(origin)
+    assert distance(np.int64(origin), np.uint64(origin)) == 0

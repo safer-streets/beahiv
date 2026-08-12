@@ -285,10 +285,11 @@ demand from the cell centre, at 30/90/150/210/270/330° (POINTY) or
 0/60/120/180/240/300° (FLAT).
 
 `cell_polygons` is the vectorised sibling for many cells at once, built on
-`batch.cell_centre_batch` for the centre lookup:
+`batch.cell_centre_batch` for the centre lookup, and taking the same
+array-like input it does — a list, a numpy array, a pandas Series:
 
 ```python
-beahiv.cell_polygons(cell_ids)  # one list of 6 vertices per cell id, same order
+beahiv.cell_polygons(cell_ids)  # one Polygon per cell id, same order
 ```
 
 Every cell passed in must share the same `side_length` and `orientation` —
@@ -324,6 +325,17 @@ before decoding a batch built from data with gaps:
 ```python
 centres = beahiv.centroid(cell_ids[cell_ids != beahiv.INVALID_CELL_ID])
 ```
+
+The scalar functions take numpy integers as well as `int`, so a single id
+picked out of a batch result (or read from a pandas column, or a DuckDB
+`BIGINT`) can be passed straight back in:
+
+```python
+beahiv.k_ring(cell_ids[0], 1)  # cell_ids[0] is an np.uint64, not an int
+```
+
+They coerce it on the way in and always hand back plain Python `int` ids —
+nothing downstream inherits numpy's fixed-width overflow behaviour.
 
 ### pyarrow
 

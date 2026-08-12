@@ -7,6 +7,8 @@ the one bulk operation that needs a full point-in-polygon query, done via
 Shapely rather than anything homegrown.
 """
 
+from typing import SupportsIndex
+
 from shapely import Point, box, prepared
 from shapely.geometry.base import BaseGeometry
 
@@ -104,7 +106,7 @@ def bbox_fill(
 
 
 def resize_cell(
-    cell_id: int,
+    cell_id: SupportsIndex,
     new_side_length: int,
     orientation: Orientation | None = None,
     predicate: str = "centre",

@@ -1,5 +1,6 @@
 import random
 
+import numpy as np
 import pytest
 from shapely.ops import unary_union
 
@@ -172,3 +173,12 @@ def test_get_children_requires_even_side_length():
     get_children(encode(0, 0, 100))  # doesn't raise
     with pytest.raises(ValueError):
         get_children(encode(0, 0, 101))
+
+
+def test_lookups_accept_numpy_integer_ids():
+    cell_id = encode(4, -6, 100)
+
+    assert get_parent(np.int64(cell_id)) == get_parent(cell_id)
+    assert get_parents(np.int64(cell_id)) == get_parents(cell_id)
+    assert get_child(np.int64(cell_id)) == get_child(cell_id)
+    assert get_children(np.int64(cell_id)) == get_children(cell_id)

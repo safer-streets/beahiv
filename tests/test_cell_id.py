@@ -1,5 +1,6 @@
 import random
 
+import numpy as np
 import pytest
 
 from beahiv import CellIndex, Orientation, decode, encode
@@ -150,3 +151,20 @@ def test_decode_rejects_the_invalid_cell_id_sentinel():
 def test_decode_accepts_exactly_what_encode_produces():
     for q, r, side_length, orientation in _random_cells(500, seed=9):
         assert decode(encode(q, r, side_length, orientation)).encode() == encode(q, r, side_length, orientation)
+
+
+def test_encode_and_decode_accept_numpy_integers():
+    """Ids reach the scalar API as numpy integers by ordinary use (an element of a decode_batch
+    result, a pandas column, a DuckDB BIGINT), and numpy's fixed-width arithmetic gets this bit
+    layout wrong in both directions unless they're coerced -- see the cell_id module docstring."""
+    cell_id = encode(-100, -200, 100)
+
+    assert encode(np.int64(-100), np.int64(-200), np.uint64(100)) == cell_id
+    assert type(encode(np.int64(-100), np.int64(-200), np.uint64(100))) is int
+
+    for dtype in (np.int64, np.uint64):
+        idx = decode(dtype(cell_id))
+        assert idx == CellIndex(-100, -200, 100, Orientation.FLAT)
+        # equality alone wouldn't catch a numpy scalar leaking through; the arithmetic downstream
+        # (neighbours, hierarchy) is what breaks on one, not the comparison here
+        assert [type(v) for v in (idx.q, idx.r, idx.side_length)] == [int, int, int]

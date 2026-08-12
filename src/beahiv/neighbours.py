@@ -1,6 +1,8 @@
 """Neighbour/distance/ring operations. Pure coordinate arithmetic -- no
 geometry is constructed."""
 
+from typing import SupportsIndex
+
 from .cell_id import decode, encode
 
 NEIGHBOUR_OFFSETS: tuple[tuple[int, int], ...] = (
@@ -13,13 +15,13 @@ NEIGHBOUR_OFFSETS: tuple[tuple[int, int], ...] = (
 )
 
 
-def get_neighbours(cell_id: int) -> tuple[int, ...]:
+def get_neighbours(cell_id: SupportsIndex) -> tuple[int, ...]:
     """Return the six neighbouring cell ids, same side_length/orientation."""
     idx = decode(cell_id)
     return tuple(encode(idx.q + dq, idx.r + dr, idx.side_length, idx.orientation) for dq, dr in NEIGHBOUR_OFFSETS)
 
 
-def distance(cell_a: int, cell_b: int) -> int:
+def distance(cell_a: SupportsIndex, cell_b: SupportsIndex) -> int:
     """Hex grid distance (number of hops) between two cells."""
     a = decode(cell_a)
     b = decode(cell_b)
@@ -32,7 +34,7 @@ def distance(cell_a: int, cell_b: int) -> int:
     return (abs(ax - bx) + abs(ay - by) + abs(az - bz)) // 2
 
 
-def k_ring(cell_id: int, k: int) -> tuple[int, ...]:
+def k_ring(cell_id: SupportsIndex, k: int) -> tuple[int, ...]:
     """Return all cells within hex distance k of cell_id (including itself)."""
     if k < 0:
         raise ValueError("k must be >= 0")

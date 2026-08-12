@@ -7,6 +7,9 @@ integer ranges, which helps DuckDB clustering, Parquet sort-order pruning,
 and range scans. Fully reversible.
 """
 
+from operator import index
+from typing import SupportsIndex
+
 from .cell_id import (
     ORIENTATION_MASK,
     ORIENTATION_SHIFT,
@@ -51,11 +54,15 @@ def _deinterleave(value: int, a_bits: int, b_bits: int) -> tuple[int, int]:
 
 
 def encode_morton(
-    q: int,
-    r: int,
-    side_length: int,
+    q: SupportsIndex,
+    r: SupportsIndex,
+    side_length: SupportsIndex,
     orientation: Orientation = Orientation.FLAT,
 ) -> int:
+    q = index(q)
+    r = index(r)
+    side_length = index(side_length)
+
     if not (1 <= side_length <= SIDE_LENGTH_MAX):
         raise ValueError(f"side_length must be in [1, {SIDE_LENGTH_MAX}], got {side_length}")
 
@@ -72,14 +79,14 @@ def encode_morton(
     return cell_id & UINT64_MASK
 
 
-def decode_morton(cell_id: int) -> CellIndex:
+def decode_morton(cell_id: SupportsIndex) -> CellIndex:
     """Recover (q, r, side_length, orientation) from a Morton-ordered cell id.
 
     Rejects the same ids `decode` does (see `cell_id.validate_cell_id`) -- the orientation,
     side_length and reserved fields sit in the same places either way. It still cannot tell a
     Morton id from a plain one: both are well-formed here, and only the q/r bits differ.
     """
-    side_length = validate_cell_id(cell_id)
+    cell_id, side_length = validate_cell_id(cell_id)
 
     orientation = Orientation((cell_id >> ORIENTATION_SHIFT) & ORIENTATION_MASK)
     morton = cell_id & _MORTON_MASK

@@ -2,9 +2,10 @@
 regenerated from (q, r, side_length, orientation)."""
 
 import math
-from collections.abc import Sequence
+from typing import SupportsIndex
 
 import numpy as np
+from numpy.typing import ArrayLike
 from shapely import Polygon
 
 from .batch import cell_centre_batch
@@ -18,7 +19,7 @@ _VERTEX_ANGLES_DEG = {
 }
 
 
-def cell_polygon(cell_id: int) -> Polygon:
+def cell_polygon(cell_id: SupportsIndex) -> Polygon:
     """Return a cell's six-vertex outline as a Shapely `Polygon`, in EPSG:27700 metres."""
     idx = decode(cell_id)
     xc, yc = axial_to_cartesian(idx.q, idx.r, idx.side_length, idx.orientation)
@@ -31,17 +32,21 @@ def cell_polygon(cell_id: int) -> Polygon:
     )
 
 
-def cell_polygons(cell_ids: Sequence[int]) -> list[Polygon]:
+def cell_polygons(cell_ids: ArrayLike) -> list[Polygon]:
     """Vectorised version of the above: one `Polygon` for every cell in `cell_ids`.
+
+    Takes anything `batch.cell_centre_batch` does -- a list, a numpy array, a pandas Series --
+    since that's what the centre lookup here forwards to.
 
     Every cell must share the same side_length and orientation -- the same restriction
     `batch.cell_centre_batch` already applies to the vectorised centre lookup this reuses,
     since a single angle set / radius only applies to one orientation and side_length at a time.
     """
-    if len(cell_ids) == 0:
+    ids = np.asarray(cell_ids)
+    if ids.size == 0:
         return []
-    xc, yc = cell_centre_batch(cell_ids)
-    idx = decode(int(cell_ids[0]))
+    xc, yc = cell_centre_batch(ids)
+    idx = decode(ids[0])
     theta = np.radians(_VERTEX_ANGLES_DEG[idx.orientation])
     vx = xc[:, None] + idx.side_length * np.cos(theta)
     vy = yc[:, None] + idx.side_length * np.sin(theta)

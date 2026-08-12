@@ -1,5 +1,6 @@
 import random
 
+import numpy as np
 import pytest
 
 from beahiv import CellIndex, Orientation
@@ -51,3 +52,13 @@ def test_decode_morton_rejects_what_decode_rejects():
     ]:
         with pytest.raises(ValueError):
             decode_morton(cell_id)
+
+
+def test_encode_morton_and_decode_morton_accept_numpy_integers():
+    cell_id = encode_morton(-100, -200, 100)
+
+    assert encode_morton(np.int64(-100), np.int64(-200), np.uint64(100)) == cell_id
+    assert decode_morton(np.int64(cell_id)) == CellIndex(-100, -200, 100, Orientation.FLAT)
+
+    idx = decode_morton(np.uint64(cell_id))
+    assert [type(v) for v in (idx.q, idx.r, idx.side_length)] == [int, int, int]

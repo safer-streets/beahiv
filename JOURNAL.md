@@ -7,6 +7,51 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## The scalar API takes numpy integer ids, not just `int`
+
+- **Why** — `k_ring(np.int64(cell_id), 1)` raised `OverflowError: Python int too large to convert
+  to C long`. Every id coming out of the vectorised API is an `np.uint64` (`decode_batch`, a
+  pandas column, a DuckDB/Parquet BIGINT), so feeding one back into a scalar call is the obvious
+  thing to do and it failed — in `encode`, where `cell_id & UINT64_MASK` can't run against a numpy
+  operand because the mask doesn't fit an int64. `get_neighbours`, `get_parent(s)`, `get_child`
+  and `get_children` failed the same way; `decode`/`decode_morton` "worked" but returned a
+  `CellIndex` whose fields were numpy scalars, which is what carried the problem downstream.
+- **What**
+  - [cell_id.py](src/beahiv/cell_id.py): `encode` coerces `q`/`r`/`side_length` and
+    `validate_cell_id` coerces `cell_id`, all via `operator.index`. Params widened from `int` to
+    `SupportsIndex`; return types unchanged (always plain `int`). Module docstring explains why.
+  - `validate_cell_id` now returns `(cell_id, side_length)` — coercion happens there, so `decode`
+    and `decode_morton` need the coerced id back to read q/r out of.
+  - [morton.py](src/beahiv/morton.py): same treatment for `encode_morton`/`decode_morton`.
+  - Cell-id params widened to `SupportsIndex` in [neighbours.py](src/beahiv/neighbours.py),
+    [hierarchy.py](src/beahiv/hierarchy.py), [geometry.py](src/beahiv/geometry.py),
+    [polyfill.py](src/beahiv/polyfill.py) — `ty` rejected `k_ring(np.int64(...), 1)` at the call
+    site even once it ran, which is half the bug.
+  - [geometry.py](src/beahiv/geometry.py): `cell_polygons` takes `ArrayLike` rather than
+    `Sequence[int]`, so the plural isn't narrower than the singular about the same ids.
+  - Tests in `test_cell_id.py`, `test_morton.py`, `test_neighbours.py`, `test_hierarchy.py`; all
+    four fail on the pre-fix `src/`. README gains a note under "Bulk operations".
+- **Design decisions**
+  - **`operator.index`, not `int()`.** It's the coercion protocol for things that *are* integers,
+    so it accepts numpy scalars while still rejecting a float or a numeric string — `int()` would
+    silently accept `100.7` as a side_length. It's also faster (~13ns vs ~18ns per call); `encode`
+    goes 406ns → 452ns, still comfortably inside the sub-microsecond scalar target.
+  - **Coerce at the two entry points, not everywhere.** `encode` and `validate_cell_id` are the
+    only doors into the bit layout, so pinning values there leaves `neighbours`/`hierarchy`/
+    `polyfill` doing plain-Python arithmetic with no numpy awareness of their own.
+  - **Fixing `& UINT64_MASK` alone wasn't enough**, even though it's the line that raised (and is
+    provably a no-op — a validated id is always < 2**61). Dropping it would have made `encode`
+    *return* an `np.int64`, and `decode` had a quieter version of the same bug in the other
+    direction: under `np.uint64`, the `q_enc - Q_OFFSET` for any negative q wraps to ~1.8e19 with
+    only a RuntimeWarning. Coercion fixes both; a mask change fixes neither properly.
+  - **`SupportsIndex` rather than a `CellIdLike` alias or a `int | np.integer` union.** No new
+    vocabulary, no numpy import in modules that don't have one, and unlike the union it stays
+    honest about accepting anything with `__index__`.
+- **Follow-ups** — `centroid` still dispatches on `isinstance(cell_id, int)`, so a single
+  `np.uint64` id takes the *batch* path and comes back as `np.float64` scalars rather than
+  floats. The values are right and the scalar path deliberately avoids importing numpy to test
+  for it (see AGENTS.md), so this was left alone.
+
 ## pre-commit runs the fourth quality gate; AGENTS.md stops denying it exists
 
 - **Why** — [.pre-commit-config.yaml](.pre-commit-config.yaml) ran `uv-lock`/`ruff check`/`ruff

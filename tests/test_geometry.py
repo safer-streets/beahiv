@@ -1,5 +1,6 @@
 import random
 
+import numpy as np
 import pytest
 
 from beahiv import Orientation, cell_polygon, cell_polygons, centroid, encode
@@ -65,6 +66,14 @@ def test_cell_polygons_matches_scalar_cell_polygon():
 
 def test_cell_polygons_empty_input_returns_empty_list():
     assert cell_polygons([]) == []
+    assert cell_polygons(np.array([], dtype=np.uint64)) == []
+
+
+def test_cell_polygons_accepts_an_array_of_ids():
+    """The ids usually arrive as the uint64 array a batch call produced, not as a list."""
+    cell_ids = [encode(q, -3, 250) for q in range(5)]
+
+    assert cell_polygons(np.array(cell_ids, dtype=np.uint64)) == cell_polygons(cell_ids)
 
 
 def test_cell_polygons_rejects_mixed_orientation():
