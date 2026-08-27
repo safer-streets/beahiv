@@ -337,6 +337,16 @@ beahiv.k_ring(cell_ids[0], 1)  # cell_ids[0] is an np.uint64, not an int
 They coerce it on the way in and always hand back plain Python `int` ids —
 nothing downstream inherits numpy's fixed-width overflow behaviour.
 
+The hierarchy helpers follow the same pattern for many ids at once: pass a
+list, numpy array, or pandas Series and get a same-shape array of results
+back, with `None` values for cells that have no same-centroid parent and
+one tuple per cell for the overlapping lookups:
+
+```python
+parents = beahiv.get_parent(cell_ids)  # same shape as cell_ids, dtype=object
+children = beahiv.get_children(cell_ids)  # same shape as cell_ids, each entry is a tuple
+```
+
 ### pyarrow
 
 `latlon_to_cell` and `bng_to_cell` also take a pyarrow `Array` or
@@ -508,10 +518,10 @@ Property tests cover:
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |
 | `distance(cell_a, cell_b)` | Hex grid distance |
 | `k_ring(cell_id, k)` | All cells within `k` hops |
-| `get_parent(cell_id)` | Cell at 2x `side_length` sharing this cell's exact centroid, or `None` if `q`/`r` aren't both even |
-| `get_child(cell_id)` | Cell at `side_length / 2` sharing this cell's exact centroid — always `(2q, 2r)` |
-| `get_parents(cell_id)` | Every cell at 2x `side_length` overlapping this one — 1 if it nests exactly, else the 2 it straddles |
-| `get_children(cell_id)` | Every cell at `side_length / 2` overlapping this one — always 7, covering it with 75% overspill |
+| `get_parent(cell_id)` | Cell at 2x `side_length` sharing this cell's exact centroid, or `None` if `q`/`r` aren't both even; accepts a single id or an array-like of ids |
+| `get_child(cell_id)` | Cell at `side_length / 2` sharing this cell's exact centroid — always `(2q, 2r)`; accepts a single id or an array-like of ids |
+| `get_parents(cell_id)` | Every cell at 2x `side_length` overlapping this one — 1 if it nests exactly, else the 2 it straddles; array input gives one tuple per id |
+| `get_children(cell_id)` | Every cell at `side_length / 2` overlapping this one — always 7, covering it with 75% overspill; array input gives one tuple per id |
 | `encode_morton` / `decode_morton` | Z-order variant of `encode`/`decode` |
 | `polyfill(polygon, side_length, orientation, predicate)` | Every cell id covering a Shapely polygon |
 | `bbox_fill(minx, miny, maxx, maxy, side_length, orientation, predicate)` | Every cell id covering an axis-aligned bounding box |

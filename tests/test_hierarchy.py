@@ -182,3 +182,23 @@ def test_lookups_accept_numpy_integer_ids():
     assert get_parents(np.int64(cell_id)) == get_parents(cell_id)
     assert get_child(np.int64(cell_id)) == get_child(cell_id)
     assert get_children(np.int64(cell_id)) == get_children(cell_id)
+
+
+@pytest.mark.parametrize("lookup", [get_parent, get_parents, get_child, get_children])
+def test_hierarchy_lookups_accept_array_like_ids(lookup):
+    # (4, -6) has a same-centroid parent, (3, -6) doesn't, so get_parent gives an id and a None.
+    cell_ids = np.array([encode(4, -6, 100), encode(3, -6, 100), encode(0, 0, 100)], dtype=np.uint64)
+
+    result = lookup(cell_ids)
+
+    assert isinstance(result, np.ndarray)
+    assert result.dtype == object
+    assert result.shape == cell_ids.shape
+    # Compared as a list, not with np.array_equal against a np.array of the expected entries: the
+    # equal-length tuples from get_children would collapse into a 2-D array of ids, which is not
+    # what these functions return (and never compares equal to the 1-D array of tuples they do).
+    assert result.tolist() == [lookup(cell_id) for cell_id in cell_ids]
+
+    # A plain (nested) list is array-like too, and the shape is whatever was handed in.
+    assert lookup(cell_ids.tolist()).tolist() == result.tolist()
+    assert lookup(cell_ids[:2].reshape(2, 1)).tolist() == [[result[0]], [result[1]]]

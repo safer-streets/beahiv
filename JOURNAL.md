@@ -7,6 +7,17 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Hierarchy lookups accept array-like cell ids too
+
+- **Why** — the README and the scalar-only implementation implied the parent/child helpers were single-id only, even though the rest of the library already supports lists/arrays transparently. Bulk work on a collection of cell ids is the normal shape for this codebase, and the hierarchy helpers were the odd ones out.
+- **What**
+  - [src/beahiv/hierarchy.py](src/beahiv/hierarchy.py): added array-like dispatch for `get_parent`, `get_parents`, `get_child`, and `get_children`, returning a same-shape `numpy` object array with `None`/tuple entries for scalar-less cases.
+  - [tests/test_hierarchy.py](tests/test_hierarchy.py): added regression coverage for `np.ndarray` and list inputs.
+  - [README.md](README.md): documented the array-like behaviour alongside the bulk-operation section and API table.
+- **Design decisions**
+  - **Keep the scalar semantics unchanged.** The scalar branch still returns plain Python `int`/`None` and tuples exactly as before; only the array-like branch adds batch handling.
+  - **Same-shape object arrays, not nested lists.** The tuple-valued functions naturally produce Python tuple objects per position, which keeps the output faithful to the scalar signature without inventing a new batch-only return type.
+
 ## The scalar API takes numpy integer ids, not just `int`
 
 - **Why** — `k_ring(np.int64(cell_id), 1)` raised `OverflowError: Python int too large to convert
