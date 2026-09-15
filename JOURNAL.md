@@ -122,7 +122,30 @@ Write the entry as part of the change, not after the fact.
     quietly changing an existing function's error type in a PR about something else, but the pair
     now behave differently and it's a one-line fix.
   - "Better support for wkb to make UDFs easier/faster" was on the same scratch list as the two
-    fixes above — untouched here.
+    fixes above. Not addressed in the library, but the README's DuckDB section was corrected and
+    its UDFs vectorised (below), which is most of what that asked for in practice.
+  - README's DuckDB section, checked by running it against a real DuckDB + spatial + geopandas:
+    - `UBIGINT` → `BIGINT` in the Arrow UDF example — stale as of this change, and contradicting
+      the same README's own "fits a signed 64-bit integer" paragraph 130 lines earlier. DuckDB
+      casts it rather than erroring, so nothing broke; it was just wrong. Three further `uint64`
+      mentions elsewhere in the README fixed for the same reason.
+    - `bh_cell_polygon` switched to `type="arrow"` over `cell_polygons`: ~2x on a 15k-cell polyfill
+      (3.01s → 1.55s, alternated and warmed), with the single-grid-per-call caveat documented.
+      `bh_polyfill` stays per-row — it takes one boundary polygon and returns a list, so there is
+      nothing to vectorise.
+    - Documented the `type="arrow"` trap: *every* declared parameter arrives as a `ChunkedArray`,
+      including a constant like `side_length`, which then fails `encode_batch`'s range check with
+      `TypeError: '<=' not supported between instances of 'int' and 'ChunkedArray'`. Scalar
+      arguments must be closed over, not declared. `bh_point_to_cell` had no parameter list at all
+      and was silently per-row; it now declares `[DOUBLE, DOUBLE]` and binds the grid.
+    - Dropped a dead `f` prefix on the parameterised query string — it had no placeholders and the
+      query correctly uses `?` binding, so the prefix did nothing except invite the next reader to
+      interpolate a value into SQL.
+    - Recorded that `ST_GeomFromWKB` can't be skipped by declaring a UDF's return type as
+      `GEOMETRY`: DuckDB raises `Conversion Error: Unimplemented type for cast (BLOB -> GEOMETRY)`.
+  - Unrelated README correctness fix found while in there: the cell-id section claimed reserved
+    bits "are masked off on decode rather than validated". They are the opposite — `decode` raises
+    on them, which is what keeps them free to be assigned a meaning later. Pre-existing error.
 
 ## Cell id arrays are `int64`, never `uint64`
 

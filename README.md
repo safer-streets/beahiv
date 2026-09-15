@@ -253,8 +253,10 @@ The three reserved bits sit at the most significant end, which means every
 cell id is below `2**61` and so fits a **signed** 64-bit integer. Every
 array of ids beahiv returns (numpy or Arrow) is `int64`, never `uint64`, so
 consumers can store ids in a plain `BIGINT` column rather than needing an
-unsigned type or a hex string. No `encode` can set the reserved bits, and
-`decode` rejects an id that has them set.
+unsigned type or a hex string. No `encode` path sets the reserved bits, and
+`decode` *rejects* an id carrying one rather than ignoring it — that
+strictness is what keeps the bits free to be given a meaning later, since a
+decoder that quietly masked unknown bits off could never start honouring one.
 
 `side_length` is stored directly as a literal metre value rather than an
 index into a resolution table, so any grid spacing that fits the bit
@@ -395,6 +397,13 @@ con.create_function(
 )
 ```
 
+Note `side_length` is closed over rather than declared as a UDF parameter.
+Under `type="arrow"` *every* declared parameter arrives as a `ChunkedArray`,
+including one that is a constant at every call site, and `bng_to_cell` wants
+a scalar `side_length` — passing the array raises `TypeError: '<=' not
+supported between instances of 'int' and 'pyarrow.lib.ChunkedArray'` from the
+range check. Take x/y as parameters and bind the grid into the function.
+
 pyarrow is **not** a runtime dependency: the import happens lazily, on a
 branch only reachable when the caller has already handed us a pyarrow
 object. The `beahiv[arrow]` extra exists to pin a version and advertise
@@ -518,7 +527,7 @@ Use WKB format to exchange geometry data between python and duckdb. Some example
 
 ```py
 import duckdb
-from duckdb.sqltypes import BIGINT, BLOB, VARCHAR
+from duckdb.sqltypes import BIGINT, BLOB, DOUBLE, VARCHAR
 import shapely
 
 
@@ -537,26 +546,42 @@ con.create_function(
 )
 con.create_function(
     "bh_cell_polygon",
-    lambda cell_id: shapely.to_wkb(bh.cell_polygon(cell_id)),
+    lambda cell_ids: shapely.to_wkb(bh.cell_polygons(cell_ids)),
     [BIGINT],
     BLOB,
+    type="arrow",
 )
 con.create_function(
     "bh_point_to_cell",
-    lambda x, y, side_length, orientation: bh.bng_to_cell(x, y, side_length, orientation),
-    return_type=BIGINT,
+    lambda x, y: bh.bng_to_cell(x, y, side_length, bh.Orientation.POINTY),
+    [DOUBLE, DOUBLE],
+    BIGINT,
+    type="arrow",
 )
 ```
 
-and to use duckdb for spatial computations (generate BEAHIV cells within a boundary polygon) and query the results into
-a geopandas geodataframe, adapt this pattern:
+`bh_cell_polygon` takes the whole chunk at once (`cell_polygons`, not
+`cell_polygon`) — about 2x faster than the per-row form on a 15k-cell
+polyfill, and the reason to spend the `type="arrow"` declaration. It
+inherits `cell_polygons`' restriction that every id in a call shares one
+`side_length` and `orientation`, which holds for the output of a single
+`polyfill` but would raise on a column mixing grids; use the per-row
+`cell_polygon` if a query can do that.
+
+`bh_polyfill` stays per-row: it consumes one boundary polygon per call and
+returns a list, so there is nothing to vectorise. `bh_point_to_cell` binds
+`side_length`/`orientation` rather than declaring them as parameters, for the
+`ChunkedArray` reason given above.
+
+And to use duckdb for spatial computations and query the results into a geopandas `GeoDataFrame`, adapt the pattern in
+the example below, which generates BEAHIV cells within a boundary polygon:
 
 ```py
 import geopandas as gpd
 
 beahiv_cells = gpd.GeoDataFrame.from_arrow(
     con.sql(
-        f"""
+        """
         WITH c AS (
             SELECT unnest(bh_polyfill(geom, ?, ?, 'centre')) AS spatial_id
             FROM boundary_table
@@ -568,6 +593,19 @@ beahiv_cells = gpd.GeoDataFrame.from_arrow(
     ).arrow()
 ).set_crs("epsg:27700")
 ```
+
+Every value is a `?` placeholder — note the query string is deliberately not
+an f-string, so `boundary_name` reaches DuckDB as a bound parameter rather
+than as interpolated SQL.
+
+`ST_GeomFromWKB` is doing real work and can't be dropped by declaring the
+UDF's return type as `GEOMETRY`: DuckDB rejects that with `Conversion Error:
+Unimplemented type for cast (BLOB -> GEOMETRY)`. WKB out of Python, parsed on
+the SQL side, is the route.
+
+The CRS is set on arrival rather than carried through: beahiv is EPSG:27700
+throughout and WKB has nowhere to put an SRID, so nothing upstream of
+`set_crs` knows the units are British National Grid metres.
 
 ## Testing
 
