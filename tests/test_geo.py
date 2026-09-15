@@ -3,7 +3,7 @@ import random
 import numpy as np
 import pytest
 
-from beahiv import Orientation, bng_to_cell, centroid, decode, latlon_to_cell
+from beahiv import Orientation, bng_to_cell, centroid, centroids, decode, latlon_to_cell
 
 
 def test_latlon_round_trip_stays_within_one_cell():
@@ -17,7 +17,7 @@ def test_latlon_round_trip_stays_within_one_cell():
     for lat, lon in points:
         for orientation in Orientation:
             cell_id = latlon_to_cell(lat, lon, side_length=100, orientation=orientation)
-            recovered_lat, recovered_lon = centroid(cell_id, latlon=True)
+            recovered_lon, recovered_lat = centroid(cell_id, latlon=True).coords[0]
             # Cell centre must be close to the original point (within ~ one cell diameter).
             assert abs(recovered_lat - lat) < 0.01
             assert abs(recovered_lon - lon) < 0.01
@@ -40,7 +40,7 @@ def test_centroid_matches_decoded_cell():
     assert idx.side_length == 1000
     assert idx.orientation == Orientation.FLAT
 
-    lat, lon = centroid(cell_id, latlon=True)
+    lon, lat = centroid(cell_id, latlon=True).coords[0]
     assert 49.0 < lat < 61.0
     assert -8.0 < lon < 2.0
 
@@ -51,9 +51,9 @@ def test_centroid_defaults_to_bng():
     to_wgs84 = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
     cell_id = latlon_to_cell(51.5074, -0.1278, side_length=1000, orientation=Orientation.FLAT)
 
-    x, y = centroid(cell_id)
+    x, y = centroid(cell_id).coords[0]
     lon, lat = to_wgs84.transform(x, y)
-    assert (lat, lon) == pytest.approx(centroid(cell_id, latlon=True))
+    assert (lon, lat) == pytest.approx(centroid(cell_id, latlon=True).coords[0])
 
 
 def test_latlon_to_cell_rejects_swapped_lat_lon():
@@ -83,7 +83,7 @@ def test_bng_to_cell_round_trips_through_centroid():
     x, y = 530000.0, 180000.0
     for side_length in (50, 500):
         cell_id = bng_to_cell(x, y, side_length)
-        cx, cy = centroid(cell_id)
+        cx, cy = centroid(cell_id).coords[0]
         assert abs(cx - x) < side_length
         assert abs(cy - y) < side_length
 
@@ -101,21 +101,61 @@ def test_latlon_to_cell_dispatches_transparently_to_array_input():
     assert list(list_ids) == scalar_ids
 
 
-def test_centroid_dispatches_transparently_to_array_input():
+def test_centroids_matches_scalar_centroid():
+    """The plural is the vectorised form of the singular, in both CRSs -- `cell_polygons` to
+    `cell_polygon`, not a differently-shaped return."""
     cell_ids = [
         latlon_to_cell(51.5074, -0.1278, side_length=500),
         latlon_to_cell(55.9533, -3.1883, side_length=500),
     ]
 
-    x_arr, y_arr = centroid(np.array(cell_ids))
-    lat_arr, lon_arr = centroid(np.array(cell_ids), latlon=True)
+    bng = centroids(np.array(cell_ids))
+    wgs84 = centroids(np.array(cell_ids), latlon=True)
     for i, cell_id in enumerate(cell_ids):
-        scalar_x, scalar_y = centroid(cell_id)
-        scalar_lat, scalar_lon = centroid(cell_id, latlon=True)
-        assert x_arr[i] == pytest.approx(scalar_x)
-        assert y_arr[i] == pytest.approx(scalar_y)
-        assert lat_arr[i] == pytest.approx(scalar_lat)
-        assert lon_arr[i] == pytest.approx(scalar_lon)
+        assert bng[i].coords[0] == pytest.approx(centroid(cell_id).coords[0])
+        assert wgs84[i].coords[0] == pytest.approx(centroid(cell_id, latlon=True).coords[0])
+
+
+def test_centroid_points_are_x_y_ordered_so_lon_comes_first():
+    """A Point carries no CRS, so axis order is the only thing saying which value is which.
+
+    Regression on the deliberate break: this used to return a `(lat, lon)` *tuple*, and a Point
+    keeping that order would be silently backwards for geopandas/GeoJSON, where x is longitude.
+    GB longitudes are near 0 and latitudes near 55, so a flip is unmissable here.
+    """
+    cell_id = latlon_to_cell(55.9533, -3.1883, side_length=500)
+
+    point = centroid(cell_id, latlon=True)
+    assert point.x == pytest.approx(-3.1883, abs=0.01)  # lon
+    assert point.y == pytest.approx(55.9533, abs=0.01)  # lat
+    assert centroids([cell_id], latlon=True)[0].coords[0] == pytest.approx(point.coords[0])
+
+
+def test_centroid_rejects_array_input_by_name():
+    """The array form moved to `centroids`, so the old array call must say so rather than
+    failing somewhere inside shapely."""
+    cell_ids = [latlon_to_cell(51.5074, -0.1278, side_length=500), latlon_to_cell(55.9533, -3.1883, side_length=500)]
+
+    for arg in (np.array(cell_ids), np.array(cell_ids[:1]), cell_ids, tuple(cell_ids)):
+        with pytest.raises(TypeError, match="centroids"):
+            centroid(arg)  # ty: ignore[invalid-argument-type] -- passing the wrong type is the point
+
+    # ... while a 0-d numpy id is a scalar and must still work, not be mistaken for an array
+    assert centroid(np.int64(cell_ids[0])).coords[0] == centroid(cell_ids[0]).coords[0]
+
+
+def test_centroids_rejects_scalar_input_by_name():
+    """The mirror of the above, and the likelier mistake for anyone moving off `centroid(array)`."""
+    cell_id = latlon_to_cell(51.5074, -0.1278, side_length=500)
+
+    # note there is no `ty: ignore` here, unlike the array-into-`centroid` case above: a scalar is
+    # a perfectly valid `ArrayLike`, so the type checker cannot flag this and the guard is the only
+    # thing standing between the caller and a confusing failure
+    for arg in (cell_id, np.int64(cell_id), np.array(cell_id)):
+        with pytest.raises(TypeError, match="centroid for one"):
+            centroids(arg)
+
+    assert centroids([cell_id])[0].coords[0] == centroid(cell_id).coords[0]
 
 
 def test_bng_to_cell_dispatches_transparently_to_array_input():

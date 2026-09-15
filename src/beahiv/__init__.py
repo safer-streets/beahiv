@@ -2,8 +2,8 @@
 equal-area hexagonal grid for EPSG:27700."""
 
 from .cell_id import INVALID_CELL_ID, CellIndex, decode, encode
-from .geo import bng_to_cell, centroid, latlon_to_cell
-from .geometry import cell_polygon, cell_polygons
+from .geo import bng_to_cell, latlon_to_cell
+from .geometry import cell_polygon, cell_polygons, centroid, centroids
 from .hierarchy import get_child, get_children, get_parent, get_parents
 from .morton import decode_morton, encode_morton
 from .neighbours import NEIGHBOUR_OFFSETS, distance, get_neighbours, k_ring
@@ -29,6 +29,7 @@ __all__ = [
     "get_children",
     "latlon_to_cell",
     "centroid",
+    "centroids",
     "bng_to_cell",
     "point_to_cell",
     "encode_morton",

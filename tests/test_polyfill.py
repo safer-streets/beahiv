@@ -55,8 +55,7 @@ def test_center_predicate_matches_centroid_containment():
     cells = polyfill(polygon, side_length, Orientation.POINTY, predicate="center")
 
     for cell_id in cells:
-        x, y = centroid(cell_id)
-        assert polygon.contains(Point(x, y))
+        assert polygon.contains(centroid(cell_id))
 
 
 def test_empty_polygon_returns_no_cells():

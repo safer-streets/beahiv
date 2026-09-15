@@ -104,8 +104,8 @@ cell_id = beahiv.latlon_to_cell(51.5074, -0.1278, side_length=500)
 beahiv.decode(cell_id)
 # CellIndex(q=707, r=-145, side_length=500, orientation=<Orientation.FLAT: 1>)
 
-beahiv.centroid(cell_id)  # (530250.0, 180566.3) in EPSG:27700 metres
-beahiv.centroid(cell_id, latlon=True)  # back to (lat, lon)
+beahiv.centroid(cell_id)  # POINT (530250 180566.3) in EPSG:27700 metres
+beahiv.centroid(cell_id, latlon=True)  # back to WGS84, as POINT (lon lat)
 beahiv.cell_polygon(cell_id)  # 6 vertices, generated on demand
 beahiv.get_neighbours(cell_id)  # 6 neighbouring cell ids
 beahiv.k_ring(cell_id, 2)  # all 19 cells within 2 hops
@@ -304,10 +304,25 @@ Every cell passed in must share the same `side_length` and `orientation` —
 same restriction as `cell_centre_batch`, since a single angle set and radius
 only apply to one grid at a time. An empty input returns `[]`.
 
+`centroid`/`centroids` mirror that pair for cell centres, returning Shapely
+`Point`s rather than coordinate tuples:
+
+```python
+beahiv.centroid(cell_id)  # POINT, EPSG:27700
+beahiv.centroids(cell_ids)  # one Point per cell id, same order
+```
+
+A `Point` carries no CRS, so with `latlon=True` the result follows the
+shapely/GeoJSON axis convention — `Point(lon, lat)`, **x is longitude** —
+and drops straight into a GeoSeries with `crs=4326`. For plain coordinate
+columns, `batch.cell_centre_batch` and `batch.cell_to_latlon_batch` are the
+direct route and are what `centroids` wraps.
+
 ## Bulk operations
 
-`latlon_to_cell`, `bng_to_cell`, and `centroid` accept arrays transparently —
-pass a list, a numpy array, or a pandas Series and get one back:
+`latlon_to_cell` and `bng_to_cell` accept arrays transparently —
+pass a list, a numpy array, or a pandas Series and get one back
+(`centroid` is scalar-only; its array form is `centroids`):
 
 ```python
 cell_ids = beahiv.latlon_to_cell(lats, lons, side_length=500)  # lats/lons: array-like
@@ -331,7 +346,7 @@ the sentinel rather than returning coordinates for it, so filter it out
 before decoding a batch built from data with gaps:
 
 ```python
-centres = beahiv.centroid(cell_ids[cell_ids != beahiv.INVALID_CELL_ID])
+centres = beahiv.centroids(cell_ids[cell_ids != beahiv.INVALID_CELL_ID])
 ```
 
 The scalar functions take numpy integers as well as `int`, so a single id
@@ -497,6 +512,63 @@ instead:
 beahiv.resize_cell(cell_id, new_side_length=50, orientation=Orientation.FLAT)
 ```
 
+### DuckDB spatial
+
+Use WKB format to exchange geometry data between python and duckdb. Some examples of vectorised UDFs are below.
+
+```py
+import duckdb
+from duckdb.sqltypes import BIGINT, BLOB, VARCHAR
+import shapely
+
+
+GEOMETRY = duckdb.type("GEOMETRY")
+
+con = duckdb.connect(...)
+con.execute("INSTALL spatial;LOAD spatial;")
+
+con.create_function(
+    "bh_polyfill",
+    lambda wkb, side_length, orientation, predicate: bh.polyfill(
+        shapely.from_wkb(wkb), side_length, bh.Orientation(orientation), predicate
+    ),
+    [GEOMETRY, BIGINT, BIGINT, VARCHAR],
+    duckdb.list_type(BIGINT),
+)
+con.create_function(
+    "bh_cell_polygon",
+    lambda cell_id: shapely.to_wkb(bh.cell_polygon(cell_id)),
+    [BIGINT],
+    BLOB,
+)
+con.create_function(
+    "bh_point_to_cell",
+    lambda x, y, side_length, orientation: bh.bng_to_cell(x, y, side_length, orientation),
+    return_type=BIGINT,
+)
+```
+
+and to use duckdb for spatial computations (generate BEAHIV cells within a boundary polygon) and query the results into
+a geopandas geodataframe, adapt this pattern:
+
+```py
+import geopandas as gpd
+
+beahiv_cells = gpd.GeoDataFrame.from_arrow(
+    con.sql(
+        f"""
+        WITH c AS (
+            SELECT unnest(bh_polyfill(geom, ?, ?, 'centre')) AS spatial_id
+            FROM boundary_table
+            WHERE name = ?
+        )
+        SELECT spatial_id, ST_GeomFromWKB(bh_cell_polygon(spatial_id)) AS geometry FROM c
+        """,
+        params=(side_length, bh.Orientation.POINTY, boundary_name),
+    ).arrow()
+).set_crs("epsg:27700")
+```
+
 ## Testing
 
 ```bash
@@ -523,7 +595,8 @@ Property tests cover:
 | `latlon_to_cell(lat, lon, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow) |
 | `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow) |
 | `point_to_cell(points, side_length, orientation)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700 only |
-| `centroid(cell_id, latlon=False)` | Cell centre → EPSG:27700 (default) or WGS84 (`latlon=True`) |
+| `centroid(cell_id, latlon=False)` | Cell centre as a Shapely `Point` — EPSG:27700 (default), or WGS84 as `Point(lon, lat)` (`latlon=True`) |
+| `centroids(cell_ids, latlon=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out |
 | `cell_polygon(cell_id)` | Cell outline as a Shapely `Polygon`, in EPSG:27700 |
 | `cell_polygons(cell_ids)` | Vectorised `cell_polygon` — one same-grid cell id list in, one `Polygon` per cell out |
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |
