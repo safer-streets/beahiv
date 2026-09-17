@@ -112,6 +112,8 @@ beahiv.k_ring(cell_id, 2)  # all 19 cells within 2 hops
 beahiv.distance(cell_id, other)  # hex grid distance between two cells
 ```
 
+See also: [examples notebook](https://github.com/safer-streets/exploratory-data-analysis/blob/main/introducing-beahiv.ipynb)
+
 ## Core concepts
 
 ### Side length
