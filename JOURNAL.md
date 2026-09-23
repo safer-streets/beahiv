@@ -7,6 +7,146 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Drop the Shapely import allowlist, keep the spatial-predicate rule
+
+- **Why** — AGENTS.md rule 6 named `polyfill.py`, `points.py` and `geometry.py` as the only modules
+  allowed to *import* Shapely. That allowlist was never the actual design goal. The goal (README
+  "Why not H3?") is that indexing, hierarchy and neighbour lookups stay pure `(q, r)` arithmetic
+  and run no point-in-polygon query — the import ban was a proxy for it, and a leaky one, because
+  importing Shapely to *construct* a `Polygon` has nothing to do with *querying* one. The proxy
+  had already been widened twice for exactly that reason (`points.py` when `point_to_cell` landed,
+  `geometry.py` when `cell_polygon` started returning a real `Polygon` — that entry says outright
+  that the import half "was incidental"), and each widening was preceded by a round of contorting
+  code to satisfy a rule nobody meant. The previous entry is the third instance: `centroid` had to
+  return Shapely, `geo.py` was not on the list, so the numeric core was split out as
+  `geo._cell_centre` to keep the import out of `geo.py`. Removed rather than widened again.
+- **What**
+  - `AGENTS.md` rule 6 rewritten: the prohibition is now on spatial predicates
+    (`.contains()`/`.intersects()` outside `polyfill.py`), explicitly *not* on imports, with a note
+    on why the allowlist existed so it doesn't get reintroduced as a "tightening". The geopandas
+    ban is unchanged — nothing may import geopandas anywhere, tests included.
+  - `AGENTS.md` CRS bullet: the `geo._cell_centre` split is now attributed to the pyproj rule
+    alone, which is the only constraint still holding it in place.
+  - [src/beahiv/geo.py](src/beahiv/geo.py): `_cell_centre`'s docstring corrected to match.
+- **Design decisions**
+  - **No code moved.** The rule change makes `geo.centroid` *possible*, not obviously better:
+    `centroid`/`centroids` sit next to `cell_polygon`/`cell_polygons` in `geometry.py`, which is
+    where "the geometry of a cell" belongs, and consolidating them into `geo.py` would split that
+    pair to save one private helper. `_cell_centre` stays until the CRS rule is the one being
+    revisited — noted in both AGENTS.md and the docstring so the option isn't lost.
+  - **The geopandas ban was left alone.** It rests on a different argument (geopandas is not a
+    dependency at all, and `points.py` duck-types rather than importing it), so relaxing the
+    Shapely rule says nothing about it.
+- **Follow-ups**
+  - The CRS/pyproj rule is now the only thing keeping `_cell_centre` private and separate. If
+    that's revisited, `centroid` collapses into `geo.py` and the helper goes.
+
+## `centroid` returns a Shapely `Point`; batch encoders return signed `int64`
+
+- **Why** — two public return types were inconsistent with the rest of the library. The batch
+  encoders returned `uint64`, which is the one 64-bit integer type consumers *can't* use: numpy
+  promotes it to `float64` against any signed integer, so comparing a batch id against a scalar
+  one silently lost precision at these magnitudes, and pandas/Arrow/BIGINT all want the signed
+  type. `cell_id.py`'s module docstring had promised exactly this since the layout was designed
+  ("the reserved bits ... put every cell id below 2**61 -- comfortably inside a *signed* 64-bit
+  integer, so consumers can store ids in a plain int64/BIGINT column") — the batch path just
+  never honoured it. Separately, `centroid` returned a coordinate *tuple* while `cell_polygon`
+  returned a real geometry object, so the two halves of "what is this cell, geometrically" came
+  back in different kinds.
+- **What**
+  - [src/beahiv/batch.py](src/beahiv/batch.py): `encode_batch` builds and returns `int64`,
+    `decode_batch` reads `int64`, and both `*_to_cell_batch` allocate their `INVALID_CELL_ID` fill
+    as `int64`. The `np.uint64(...)` wrappers around every shift/mask constant are gone (plain
+    Python ints work against an `int64` array), as is the now-unused `UINT64_MASK` import.
+  - `geo.centroid` → `geo._cell_centre`: private, scalar-only, tuple-returning, and now **x/y
+    ordered in both CRSs** (so `(lon, lat)` for WGS84, dropping the swap the old code did).
+  - [src/beahiv/geometry.py](src/beahiv/geometry.py): new public `centroid(cell_id, latlon=False)
+    -> Point` and `centroids(cell_ids, latlon=False) -> list[Point]`, exported from
+    `beahiv/__init__.py` (`centroids` is new to `__all__`).
+  - Tests: `test_batch_encoders_return_signed_int64` and `test_decode_batch_still_accepts_uint64_ids`;
+    `test_centroid_points_are_x_y_ordered_so_lon_comes_first`, `test_centroids_matches_scalar_centroid`,
+    `test_centroid_rejects_array_input_by_name`. Existing `centroid` call sites updated across
+    `test_geo.py`, `test_batch.py`, `test_geometry.py`, `test_polyfill.py`.
+  - `README.md` (quickstart output re-captured, bulk-operations section, API table) and `AGENTS.md`
+    (module table, repo layout, dispatch-typing rule, Shapely and pyproj boundary rules).
+- **Design decisions**
+  - **`Point(lon, lat)` for `latlon=True`, deliberately the opposite of the old `(lat, lon)`
+    tuple.** A `Point` carries no CRS and no named axes, so axis order is the *only* thing telling
+    a consumer which value is which — and every downstream convention (shapely, geopandas,
+    GeoJSON) reads x as longitude. Keeping `(lat, lon)` would have produced a Point that is
+    silently backwards in any `GeoSeries(..., crs=4326)`. This is a real break for existing
+    `centroid(id, latlon=True)` callers and is called out in the docstring and the README.
+  - **A scalar/plural name pair, not overloaded dispatch.** `centroid`/`centroids` mirrors
+    `cell_polygon`/`cell_polygons`. A `Point` and a `list[Point]` aren't one overloaded return the
+    way a scalar and an array are, and AGENTS.md's `@overload` + `ArrayLike` rule exists to keep
+    return types unambiguous — which a `Point | list[Point]` union would defeat. Nothing is lost
+    for bulk callers: `batch.cell_centre_batch`/`cell_to_latlon_batch` are already public and are
+    the direct route to coordinate columns, and are what `centroids` wraps.
+  - **`centroid` rejects array input by name** rather than failing inside shapely, since
+    `centroid(array)` was valid until this change. The guard is a rank check
+    (`getattr(cell_id, "ndim", 0) != 0`), *not* `isinstance(cell_id, SupportsIndex)`: `ndarray`
+    defines `__index__` and so satisfies that protocol, but only honours it at size 1 — the
+    protocol check let one-element arrays straight through.
+  - **The numeric core stayed in `geo.py` as `_cell_centre`.** `centroid` returns Shapely so it
+    has to live in `geometry.py`, but AGENTS.md restricts `pyproj` to `geo.py`/`batch.py`. Having
+    `geometry.py` delegate the projection satisfies both rules and avoids a third copy of the
+    WGS84 `Transformer`. `geo.py` does not import `geometry.py`, so there's no cycle.
+  - **`decode_batch` needed no sign check of its own.** A negative `int64` has bit 63 set, which
+    is a reserved bit, and the arithmetic right-shift preserves it — so the existing reserved-bits
+    rejection already catches it. `encode_batch` did need an explicit `q_enc < 0` check: the old
+    code relied on an out-of-range coordinate *wrapping* under `uint64` to something `> Q_MASK`.
+  - **Signing the ids gives up nothing.** The reserved bits sit at the most significant end by
+    design, so no id reaches bit 63, and ids stored as `uint64` before this change still decode
+    unchanged (there's a test).
+  - **`decode_batch` catches numpy's `OverflowError` and re-raises `ValueError`.** Caught in
+    review: an id at or above `2**63` doesn't fit the `int64` the batch path now converts to, and
+    for *list* input numpy raises `OverflowError: Python int too large to convert to C long`
+    during `asarray` — before any bit check runs. The scalar path rejects the same id with a
+    `ValueError`, and rejection parity is a standing rule, so the conversion is wrapped. An
+    already-`uint64` array needs no special case: it wraps to a negative, and bit 63 is a reserved
+    bit, so the existing check catches it. The parity test only covered the `uint64`-array form,
+    which is why it stayed green — it now covers the plain-list form too.
+  - **`centroids` rejects scalar input by name**, mirroring `centroid`'s array guard. Also caught
+    in review. This is the likelier of the two mistakes for anyone migrating off `centroid(array)`,
+    and the one a type checker cannot help with: a scalar is a valid `ArrayLike`, so `ty` sees
+    nothing wrong (the test notes the asymmetry — the array-into-`centroid` case needs a
+    `ty: ignore`, this one must not have one). Without the guard it died on `'float' object is not
+    iterable`.
+- **Follow-ups**
+  - `batch.cell_centre_batch` and `cell_to_latlon_batch` still return `(x, y)` / `(lat, lon)`
+    tuple-of-arrays. `cell_to_latlon_batch` is now the one place left returning lat-first, which
+    `centroids` has to swap; worth considering aligning it on x/y order, but that's a separate
+    public break.
+  - `cell_polygons` has the same scalar-input wart `centroids` just had — `cell_polygons(cell_id)`
+    fails with `IndexError: too many indices for array`. Pre-existing, so left alone rather than
+    quietly changing an existing function's error type in a PR about something else, but the pair
+    now behave differently and it's a one-line fix.
+  - "Better support for wkb to make UDFs easier/faster" was on the same scratch list as the two
+    fixes above. Not addressed in the library, but the README's DuckDB section was corrected and
+    its UDFs vectorised (below), which is most of what that asked for in practice.
+  - README's DuckDB section, checked by running it against a real DuckDB + spatial + geopandas:
+    - `UBIGINT` → `BIGINT` in the Arrow UDF example — stale as of this change, and contradicting
+      the same README's own "fits a signed 64-bit integer" paragraph 130 lines earlier. DuckDB
+      casts it rather than erroring, so nothing broke; it was just wrong. Three further `uint64`
+      mentions elsewhere in the README fixed for the same reason.
+    - `bh_cell_polygon` switched to `type="arrow"` over `cell_polygons`: ~2x on a 15k-cell polyfill
+      (3.01s → 1.55s, alternated and warmed), with the single-grid-per-call caveat documented.
+      `bh_polyfill` stays per-row — it takes one boundary polygon and returns a list, so there is
+      nothing to vectorise.
+    - Documented the `type="arrow"` trap: *every* declared parameter arrives as a `ChunkedArray`,
+      including a constant like `side_length`, which then fails `encode_batch`'s range check with
+      `TypeError: '<=' not supported between instances of 'int' and 'ChunkedArray'`. Scalar
+      arguments must be closed over, not declared. `bh_point_to_cell` had no parameter list at all
+      and was silently per-row; it now declares `[DOUBLE, DOUBLE]` and binds the grid.
+    - Dropped a dead `f` prefix on the parameterised query string — it had no placeholders and the
+      query correctly uses `?` binding, so the prefix did nothing except invite the next reader to
+      interpolate a value into SQL.
+    - Recorded that `ST_GeomFromWKB` can't be skipped by declaring a UDF's return type as
+      `GEOMETRY`: DuckDB raises `Conversion Error: Unimplemented type for cast (BLOB -> GEOMETRY)`.
+  - Unrelated README correctness fix found while in there: the cell-id section claimed reserved
+    bits "are masked off on decode rather than validated". They are the opposite — `decode` raises
+    on them, which is what keeps them free to be assigned a meaning later. Pre-existing error.
+
 ## Cell id arrays are `int64`, never `uint64`
 
 - **Why** — no function should return cell ids as `np.uint64`, under any circumstances. `uint64`

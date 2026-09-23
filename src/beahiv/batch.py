@@ -114,6 +114,7 @@ def encode_batch(
     side_length: int,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
+    """Encode axial coordinates into int64 cell ids -- see `cell_id.encode` for the layout."""
     q = np.asarray(q, dtype=np.int64)
     r = np.asarray(r, dtype=np.int64)
 
@@ -148,12 +149,26 @@ def decode_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarra
     functions emit INVALID_CELL_ID for missing input, so an array built from data with gaps must
     have them filtered out before it can be decoded.
     """
-    cell_ids = np.asarray(cell_ids, dtype=np.uint64)
+    try:
+        cell_ids = np.asarray(cell_ids, dtype=np.int64)
+    except OverflowError as exc:
+        # A Python int too big for int64 never reaches the bit checks below -- numpy raises during
+        # the conversion, with a message about C longs. An id that large has bit 63 set, which is a
+        # reserved bit, so the scalar path rejects it too: re-raise as the same ValueError rather
+        # than letting the batch path differ in error type (see the rejection-parity rule).
+        # An already-uint64 array needs none of this -- it wraps to a negative and the reserved
+        # check below catches it.
+        raise ValueError(
+            "cell id(s) too large to be valid: every id encode produces is below 2**61, "
+            "so anything that doesn't fit a signed int64 has reserved bits set"
+        ) from exc
 
-    orientation = ((cell_ids >> np.uint64(ORIENTATION_SHIFT)) & np.uint64(ORIENTATION_MASK)).astype(np.uint8)
-    side_length = ((cell_ids >> np.uint64(SIDE_LENGTH_SHIFT)) & np.uint64(SIDE_LENGTH_MASK)).astype(np.int64)
+    orientation = ((cell_ids >> ORIENTATION_SHIFT) & ORIENTATION_MASK).astype(np.uint8)
+    side_length = (cell_ids >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
 
-    reserved = (cell_ids >> np.uint64(RESERVED_SHIFT)) & np.uint64(RESERVED_MASK)
+    # a negative id has bit 63 set, which is a reserved bit -- the arithmetic shift keeps
+    # those ones, so this rejects it rather than needing a sign check of its own
+    reserved = (cell_ids >> RESERVED_SHIFT) & RESERVED_MASK
     if np.any(reserved):
         raise ValueError(f"{int(np.count_nonzero(reserved))} cell id(s) have reserved bits set")
     invalid = (side_length < 1) | (side_length > SIDE_LENGTH_MAX)
@@ -165,8 +180,8 @@ def decode_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarra
             f"the encodable [1, {SIDE_LENGTH_MAX}]{detail}"
         )
 
-    q_enc = ((cell_ids >> np.uint64(Q_SHIFT)) & np.uint64(Q_MASK)).astype(np.int64)
-    r_enc = (cell_ids & np.uint64(R_MASK)).astype(np.int64)
+    q_enc = (cell_ids >> Q_SHIFT) & Q_MASK
+    r_enc = cell_ids & R_MASK
 
     return q_enc - Q_OFFSET, r_enc - R_OFFSET, side_length, orientation
 

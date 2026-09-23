@@ -21,8 +21,8 @@ The library is small enough to read in full; do that before extending it. Key mo
 | [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex` |
 | [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (no vectorised forms) |
 | [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
-| [geo.py](src/beahiv/geo.py) | Public geographic interface: `latlon_to_cell`, `bng_to_cell`, `centroid` (WGS84 ↔ EPSG:27700 ↔ cell id) |
-| [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry: `cell_polygon`/`cell_polygons` (nothing stored), returned as Shapely `Polygon`(s) |
+| [geo.py](src/beahiv/geo.py) | Public geographic interface: `latlon_to_cell`, `bng_to_cell` (WGS84 ↔ EPSG:27700 ↔ cell id), plus `_cell_centre`, the scalar centre lookup behind `geometry.centroid` |
+| [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry, nothing stored: `cell_polygon`/`cell_polygons` → Shapely `Polygon`(s), `centroid`/`centroids` → Shapely `Point`(s) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
 | [batch.py](src/beahiv/batch.py) | numpy-vectorised equivalents of the scalar API, for bulk encode/decode |
 | [points.py](src/beahiv/points.py) | `point_to_cell` — Shapely/geopandas point geometry (EPSG:27700 only) → cell ids (needs Shapely) |
@@ -89,6 +89,12 @@ field) should get a directly corresponding test rather than being covered incide
   and arithmetic happens in EPSG:27700 metres. Only `geo.py` and its vectorised mirror `batch.py`
   import `pyproj` and project; everything else — `cell_id.py`, `coords.py`, `geometry.py`,
   `neighbours.py`, `morton.py`, `points.py`, `polyfill.py` — never does and never should.
+  This is why `geometry.centroid(cell_id, latlon=True)` delegates to `geo._cell_centre` and
+  `batch.cell_to_latlon_batch` for the WGS84 leg rather than holding a `Transformer` of its own —
+  there are already two copies of that transformer without adding a third. Note this is now the
+  *only* reason `_cell_centre` is split out; the Shapely half of that justification went away with
+  the import allowlist (rule 6 below), so `centroid` could move into `geo.py` whole if the
+  projection rule is ever the one that gives.
 - **Nothing outside `geo.py`/`batch.py` reprojects, including `points.py`.** Shapely geometry
   carries no CRS — no `.crs`, and the GEOS SRID slot is always `0` because geopandas doesn't set
   it — so there is nothing to reproject *from* and inferring one would be a guess. `point_to_cell`
@@ -116,8 +122,7 @@ field) should get a directly corresponding test rather than being covered incide
   sync. (This is exactly how `cartesian_to_axial_batch`'s POINTY branch once drifted from the
   scalar version — a "simplification" that swapped `qf`/`rf` instead of recomputing them looked
   equivalent but wasn't; `ty` doesn't catch it, only a same-orientation batch-vs-scalar test does.)
-- **`latlon_to_cell`, `bng_to_cell`, and `centroid` dispatch transparently on scalar vs array-like
-  input.** A plain `int`/`float` takes the pure-Python path (no numpy import); anything else
+- **`latlon_to_cell` and `bng_to_cell` dispatch transparently on scalar vs array-like input.** A plain `int`/`float` takes the pure-Python path (no numpy import); anything else
   (`list`, `np.ndarray`, pandas `Series`, ...) dispatches to the `beahiv.batch` equivalent. This is
   implemented with `@overload` + `numpy.typing.ArrayLike`, not a `float | np.ndarray` union — a
   plain union return type makes every call site's return type ambiguous to `ty`/pyright, and a
@@ -127,7 +132,8 @@ field) should get a directly corresponding test rather than being covered incide
   in [geo.py](src/beahiv/geo.py) rather than a bare union.
 - **`shapely` is a core dependency, not optional.** `geometry.py`'s `cell_polygon`/`cell_polygons`
   return Shapely `Polygon` objects (not raw vertex tuples — a plain vertex list has no guarantee
-  of forming a valid, closed ring, whereas a `Polygon` enforces that structure), and both are
+  of forming a valid, closed ring, whereas a `Polygon` enforces that structure), its
+  `centroid`/`centroids` return `Point`s for the same consistency, and all four are
   exported eagerly from `beahiv/__init__.py` alongside `polyfill`, so `import beahiv` always needs
   Shapely installed. This was a deliberate tradeoff (flat top-level API, real geometry objects over
   a shapely-free `import beahiv`); don't "fix" it by moving `shapely` back to an extra without also
@@ -172,13 +178,23 @@ When reviewing a PR or diff, check:
    non-zero reserved field: `decode` refusing it is what keeps those bits free to mean something
    later, so don't relax it to "ignore unknown bits".
 5. **Dispatch typing** — a new scalar/array dual-mode function uses `@overload` +
-   `numpy.typing.ArrayLike`, matching `latlon_to_cell`/`bng_to_cell`/`centroid`, not a bare
-   `X | np.ndarray` union return type.
-6. **Shapely/geopandas boundary** — `polyfill.py`, `points.py`, and `geometry.py` are the only
-   modules allowed to import Shapely (the first two for point-in-polygon queries and point
-   geometry input, `geometry.py` only to construct/return `Polygon` objects — it still runs no
-   spatial predicate itself); don't let a Shapely import creep into `cell_id.py`, `coords.py`,
-   `geo.py`, `neighbours.py`, `morton.py`, or `batch.py`. Nothing may import geopandas at all,
+   `numpy.typing.ArrayLike`, matching `latlon_to_cell`/`bng_to_cell`, not a bare
+   `X | np.ndarray` union return type. A function returning *Shapely* takes the other route:
+   a scalar/plural name pair (`cell_polygon`/`cell_polygons`, `centroid`/`centroids`), because
+   a `Point` and a `list[Point]` aren't one overloaded return the way a scalar and an array are.
+6. **Shapely/geopandas boundary** — the rule is about *spatial predicates*, not imports. No module
+   outside `polyfill.py` may run a point-in-polygon / intersection / containment query: indexing,
+   hierarchy and neighbour lookups are pure `(q, r)` arithmetic and must stay that way, which is
+   the dependency-light claim README's "Why not H3?" rests on. A `.contains()` or `.intersects()`
+   appearing in `cell_id.py`, `coords.py`, `neighbours.py`, `morton.py`, `geo.py` or `batch.py`
+   breaks that and is the thing to catch in review.
+   *Importing* Shapely is unrestricted — any module may construct and return `Polygon`/`Point`.
+   There used to be an allowlist here (`polyfill.py`/`points.py`/`geometry.py` only), but it was
+   only ever a proxy for the predicate rule: `shapely` is a hard dependency that `import beahiv`
+   already pulls in (see the bullet above), so an import costs nothing to protect against. It had
+   been widened twice already to admit modules that merely wanted to *build* a geometry object,
+   and each widening cost a round of code contortion first — `geo._cell_centre` exists because of
+   it. Removed rather than widened a third time. Nothing may import geopandas at all,
    anywhere, including `points.py`'s own tests: `points.py` duck-types on `.geometry`/`.crs` for
    geopandas-style containers, but [tests/test_points.py](tests/test_points.py) only exercises the
    plain-Shapely surface (a `Point`, or a list/ndarray of them) — the container-duck-typing branches
@@ -233,8 +249,8 @@ src/
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
     hierarchy.py        # get_parent(s) / get_child(ren) -- 2x/0.5x side_length: same-centroid (singular) or overlapping (plural)
     morton.py          # Z-order variant of encode/decode
-    geo.py             # WGS84 <-> EPSG:27700 <-> cell id (latlon_to_cell, bng_to_cell, centroid)
-    geometry.py         # cell_polygon / cell_polygons -> Shapely Polygon(s), generated on demand (needs Shapely)
+    geo.py             # WGS84 <-> EPSG:27700 <-> cell id (latlon_to_cell, bng_to_cell)
+    geometry.py         # cell_polygon(s) -> Polygon(s), centroid(s) -> Point(s), generated on demand (needs Shapely)
     neighbours.py       # get_neighbours, distance, k_ring
     batch.py            # numpy-vectorised equivalents of the scalar API
     points.py           # Shapely/geopandas points -> cell ids, EPSG:27700 only (needs Shapely)

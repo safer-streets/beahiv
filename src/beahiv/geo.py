@@ -10,7 +10,7 @@ to the numpy-vectorised equivalent in `beahiv.batch`, which remains
 available directly for callers who want an unambiguous vectorised call.
 """
 
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, SupportsIndex, overload
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -18,8 +18,6 @@ from pyproj import Transformer
 
 from .batch import (
     bng_to_cell_batch,
-    cell_centre_batch,
-    cell_to_latlon_batch,
     latlon_to_cell_batch,
 )
 from .cell_id import decode, encode
@@ -134,27 +132,22 @@ def bng_to_cell(
     return _match_arrow(bng_to_cell_batch(x, y, side_length, orientation), x)
 
 
-@overload
-def centroid(cell_id: int, latlon: bool = False) -> tuple[float, float]: ...
-@overload
-def centroid(cell_id: ArrayLike, latlon: bool = False) -> tuple[np.ndarray, np.ndarray]: ...
-def centroid(
-    cell_id: ArrayLike,
-    latlon: bool = False,
-) -> tuple[float, float] | tuple[np.ndarray, np.ndarray]:
-    """Return a cell's centre: EPSG:27700 (x, y) by default, or (lat, lon) if latlon=True.
+def _cell_centre(cell_id: SupportsIndex, latlon: bool = False) -> tuple[float, float]:
+    """Return one cell's centre as (x, y): EPSG:27700 metres, or (lon, lat) when latlon=True.
 
-    Accepts a scalar cell id or an array-like of cell ids (same dispatch as
-    `latlon_to_cell`/`bng_to_cell`). For an array, every cell must share the
-    same side_length and orientation (see `cell_centre_batch`).
+    x/y order in both cases -- *not* (lat, lon). This is the numeric core behind
+    `geometry.centroid`, whose `Point`s are x/y ordered, so WGS84 comes back lon-first per the
+    shapely/GeoJSON convention (the same `always_xy` order pyproj is configured with above).
+    Kept here rather than in `geometry.py` purely so the pyproj transformer stays in one module
+    (see AGENTS.md on the CRS boundary). Shapely is no longer the reason -- this module may import
+    it freely now -- so if that projection rule ever gives, `centroid` can move here whole and
+    this helper disappears.
+
+    Scalar only: the vectorised centre lookups are `batch.cell_centre_batch` and
+    `batch.cell_to_latlon_batch`, which `geometry.centroids` uses directly.
     """
-    if isinstance(cell_id, int):
-        idx = decode(cell_id)
-        x, y = axial_to_cartesian(idx.q, idx.r, idx.side_length, idx.orientation)
-        if not latlon:
-            return x, y
-        lon, lat = _TO_WGS84.transform(x, y)
-        return lat, lon
+    idx = decode(cell_id)
+    x, y = axial_to_cartesian(idx.q, idx.r, idx.side_length, idx.orientation)
     if not latlon:
-        return cell_centre_batch(cell_id)
-    return cell_to_latlon_batch(cell_id)
+        return x, y
+    return _TO_WGS84.transform(x, y)  # always_xy=True, so this is (lon, lat)

@@ -42,7 +42,7 @@ def test_coordinate_stability_point_falls_within_returned_polygon():
         cell_id = encode(q, r, side_length, orientation)
 
         polygon = cell_polygon(cell_id)
-        centre = centroid(cell_id)
+        centre = centroid(cell_id).coords[0]
 
         assert point_in_polygon_with_tolerance((x, y), _vertices(polygon), centre)
 

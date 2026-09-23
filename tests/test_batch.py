@@ -20,7 +20,8 @@ from beahiv.cell_id import (
     SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
 )
-from beahiv.geo import bng_to_cell, centroid, latlon_to_cell
+from beahiv.geo import bng_to_cell, latlon_to_cell
+from beahiv.geometry import centroid
 
 
 def test_encode_batch_matches_scalar_encode():
@@ -33,6 +34,35 @@ def test_encode_batch_matches_scalar_encode():
     scalar_ids = [encode(int(qi), int(ri), side_length, Orientation.POINTY) for qi, ri in zip(q, r, strict=True)]
 
     assert list(batch_ids.astype(object)) == scalar_ids
+
+
+def test_batch_encoders_return_signed_int64():
+    """Regression: these returned uint64, which is the one integer type consumers can't use.
+
+    numpy promotes uint64 to float64 against any signed int, so arithmetic or a comparison
+    against an id from the scalar path silently loses precision at these magnitudes; pandas
+    and Arrow/BIGINT columns want the signed type too. The reserved bits keep every id below
+    2**61, so nothing is given up by signing it.
+    """
+    ids = encode_batch(np.array([4, -6]), np.array([-6, 4]), 100)
+    assert ids.dtype == np.int64
+    assert (ids > 0).all()
+
+    assert bng_to_cell_batch([530000.0], [180000.0], 100).dtype == np.int64
+    assert latlon_to_cell_batch([51.5074], [-0.1278], 100).dtype == np.int64
+    assert bng_to_cell(np.array([530000.0]), np.array([180000.0]), 100).dtype == np.int64
+
+    # the promotion the signed type avoids: uint64 - int64 would land in float64
+    assert (ids - np.int64(1)).dtype == np.int64
+
+
+def test_decode_batch_still_accepts_uint64_ids():
+    """Ids stored before the switch, or read back from an unsigned column, decode unchanged."""
+    cell_ids = [encode(4, -6, 100), encode(-6, 4, 100)]
+    unsigned = decode_batch(np.array(cell_ids, dtype=np.uint64))
+    signed = decode_batch(np.array(cell_ids, dtype=np.int64))
+
+    assert all(np.array_equal(u, s) for u, s in zip(unsigned, signed, strict=True))
 
 
 @pytest.mark.parametrize("side_length", [0, SIDE_LENGTH_MAX + 1, SIDE_LENGTH_MASK])
@@ -125,6 +155,11 @@ def test_decode_batch_rejects_what_scalar_decode_rejects():
             decode(cell_id)  # scalar rejects it ...
         with pytest.raises(ValueError):
             decode_batch(np.array([valid, cell_id], dtype=np.uint64))  # ... so the batch must too
+        # ... including when the ids arrive as plain Python ints rather than a typed array.
+        # Regression: ids at or above 2**63 don't fit the int64 the batch path now uses, and numpy
+        # raised OverflowError from the conversion instead of the ValueError the contract promises.
+        with pytest.raises(ValueError):
+            decode_batch([valid, cell_id])
 
 
 def test_decode_batch_reports_the_sentinel_by_name():
@@ -163,7 +198,7 @@ def test_cell_to_latlon_batch_matches_scalar():
     batch_lat, batch_lon = cell_to_latlon_batch(batch_ids)
 
     for i in range(len(lats)):
-        scalar_lat, scalar_lon = centroid(int(batch_ids[i]), latlon=True)
+        scalar_lon, scalar_lat = centroid(int(batch_ids[i]), latlon=True).coords[0]
         assert abs(batch_lat[i] - scalar_lat) < 1e-9
         assert abs(batch_lon[i] - scalar_lon) < 1e-9
 
