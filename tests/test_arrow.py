@@ -68,14 +68,18 @@ def test_numpy_and_scalar_returns_are_unchanged(fn, a, b):
     assert isinstance(fn(a[0], b[0], SIDE, Orientation.FLAT), int)
 
 
-def test_arrow_return_dtype_is_uint64():
-    """Arrow gets uint64 back, and every id fits a signed 64-bit column too.
+@pytest.mark.parametrize(
+    ("fn", "a", "b"),
+    [(latlon_to_cell, *_LATLON), (bng_to_cell, *_BNG)],
+)
+def test_arrow_return_dtype_is_int64(fn, a, b):
+    """Arrow gets int64 back, never uint64, and no id is negative.
 
     The reserved bits sit above the orientation bit, so no id reaches bit 63 and
-    a consumer storing these as int64/BIGINT can't misread one as negative.
+    a signed int64/BIGINT column holds every one as-is.
     """
-    result = bng_to_cell(pa.array(_BNG[0]), pa.array(_BNG[1]), SIDE, Orientation.FLAT)
+    result = fn(pa.array(a), pa.array(b), SIDE, Orientation.FLAT)
 
-    assert result.type == pa.uint64()
+    assert result.type == pa.int64()
     assert all(cell >> ORIENTATION_SHIFT & 1 for cell in result.to_pylist())  # FLAT sets it
-    assert all(cell < 2**63 for cell in result.to_pylist())
+    assert all(cell > 0 for cell in result.to_pylist())

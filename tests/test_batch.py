@@ -11,6 +11,10 @@ from beahiv.batch import (
 )
 from beahiv.cell_id import (
     INVALID_CELL_ID,
+    Q_MASK,
+    Q_OFFSET,
+    R_MASK,
+    R_OFFSET,
     RESERVED_SHIFT,
     SIDE_LENGTH_MASK,
     SIDE_LENGTH_MAX,
@@ -44,6 +48,48 @@ def test_encode_batch_rejects_side_lengths_the_scalar_path_rejects(side_length):
         encode_batch(q, r, side_length, Orientation.FLAT)
     with pytest.raises(ValueError):
         encode(0, 0, side_length, Orientation.FLAT)
+
+
+@pytest.mark.parametrize(
+    ("q", "r"),
+    [
+        (-Q_OFFSET - 1, 0),  # q_enc just below 0
+        (Q_MASK - Q_OFFSET + 1, 0),  # q_enc just above its mask
+        (0, -R_OFFSET - 1),
+        (0, R_MASK - R_OFFSET + 1),
+    ],
+)
+def test_encode_batch_rejects_q_r_the_scalar_path_rejects(q, r):
+    """Both edges of each field: in int64 a too-negative q/r no longer wraps round to a huge
+    value that the upper-bound check would catch, so the lower bound needs its own check."""
+    with pytest.raises(ValueError):
+        encode(q, r, 100)
+    with pytest.raises(ValueError, match="representable range"):
+        encode_batch(np.array([0, q]), np.array([0, r]), 100)
+
+
+@pytest.mark.parametrize(
+    "encode_fn",
+    [
+        lambda: encode_batch(np.array([4, -4]), np.array([-6, 6]), 100),
+        lambda: encode_batch(np.array([], dtype=np.int64), np.array([], dtype=np.int64), 100),
+        lambda: latlon_to_cell_batch([51.5074, np.nan], [-0.1278, np.nan], 100),
+        lambda: latlon_to_cell_batch([np.nan], [np.nan], 100),
+        lambda: bng_to_cell_batch([530034.0, np.nan], [180381.0, np.nan], 100),
+        lambda: bng_to_cell_batch([], [], 100),
+        lambda: latlon_to_cell([51.5074], [-0.1278], 100),
+        lambda: bng_to_cell([530034.0], [180381.0], 100),
+    ],
+)
+def test_cell_id_arrays_are_int64_never_uint64(encode_fn):
+    """Every path that returns an array of ids -- including the empty and all-missing ones, which
+    never reach encode_batch -- returns signed int64.
+
+    uint64 ids promote to float64 when combined with a Python int or an int64 array, silently
+    dropping the low bits of an id, and have no native equivalent in a BIGINT column."""
+    cell_ids = encode_fn()
+    assert cell_ids.dtype == np.int64
+    assert (cell_ids >= 0).all()
 
 
 def test_decode_batch_matches_scalar_decode():

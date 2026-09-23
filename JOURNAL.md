@@ -7,6 +7,34 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Cell id arrays are `int64`, never `uint64`
+
+- **Why** — no function should return cell ids as `np.uint64`, under any circumstances. `uint64`
+  combined with a Python int or an `int64` array promotes to `float64` in numpy, silently losing
+  the low bits of an id, and has no native counterpart in a signed `BIGINT` column.
+- **What**
+  - [batch.py](src/beahiv/batch.py): `encode_batch` builds ids in `int64`; the `INVALID_CELL_ID`-
+    filled buffers in `latlon_to_cell_batch`/`bng_to_cell_batch` are `int64`, so the empty and
+    all-NaN paths (which never reach `encode_batch`) match. This flows through to
+    `latlon_to_cell`/`bng_to_cell` (numpy and Arrow → `pa.int64()`) and `point_to_cell`.
+    Dropped the now-unneeded `UINT64_MASK` import.
+  - Tests: [test_batch.py](tests/test_batch.py) checks the dtype of every array-returning path, and
+    both edges of the q/r range in `encode_batch`; [test_arrow.py](tests/test_arrow.py) and
+    [test_points.py](tests/test_points.py) now assert `int64`.
+  - [README.md](README.md): dtype mentions, DuckDB UDF example return type `UBIGINT` → `BIGINT`,
+    and fixed the stale claim that reserved bits are "masked off on decode" (it rejects them).
+- **Design decisions**
+  - **No masking needed.** The reserved bits keep every id below `2**61`, so the `int64`
+    arithmetic can't overflow and the old `& UINT64_MASK` was a no-op.
+  - **`encode_batch` now checks the lower bound of q/r explicitly.** Under `uint64`, a negative
+    `q + Q_OFFSET` wrapped round to a huge value and the upper-bound check caught it. In `int64` it
+    stays negative, so it needs its own check.
+  - **`decode_batch` still reads its input as `uint64` internally.** That only affects the input,
+    never what it returns. It still accepts `uint64` arrays from older data, and an id with bit 63
+    set is rejected by the reserved-bits check instead of raising OverflowError.
+- **Follow-ups** — scalar functions were already plain `int`, and the hierarchy array forms are
+  object arrays of `int`, so neither needed a change.
+
 ## Hierarchy lookups accept array-like cell ids too
 
 - **Why** — the README and the scalar-only implementation implied the parent/child helpers were single-id only, even though the rest of the library already supports lists/arrays transparently. Bulk work on a collection of cell ids is the normal shape for this codebase, and the hierarchy helpers were the odd ones out.

@@ -239,7 +239,7 @@ cell for every point, with no ambiguity at cell boundaries.
 
 ### Cell identifiers
 
-Every cell is a single `uint64`, reversible with no lookup table:
+Every cell is a single 64-bit integer, reversible with no lookup table:
 
 ```text
 bits 63-61  reserved      3 bits   always zero
@@ -250,10 +250,11 @@ bits 21-0   r (offset)   22 bits   r + R_OFFSET
 ```
 
 The three reserved bits sit at the most significant end, which means every
-cell id is below `2**61` and so fits a **signed** 64-bit integer. Consumers
-can store ids in a plain `int64`/`BIGINT` column rather than needing an
-unsigned type or a hex string. They are masked off on decode rather than
-validated — no `encode` can set them.
+cell id is below `2**61` and so fits a **signed** 64-bit integer. Every
+array of ids beahiv returns (numpy or Arrow) is `int64`, never `uint64`, so
+consumers can store ids in a plain `BIGINT` column rather than needing an
+unsigned type or a hex string. No `encode` can set the reserved bits, and
+`decode` rejects an id that has them set.
 
 `side_length` is stored directly as a literal metre value rather than an
 index into a resolution table, so any grid spacing that fits the bit
@@ -333,7 +334,7 @@ picked out of a batch result (or read from a pandas column, or a DuckDB
 `BIGINT`) can be passed straight back in:
 
 ```python
-beahiv.k_ring(cell_ids[0], 1)  # cell_ids[0] is an np.uint64, not an int
+beahiv.k_ring(cell_ids[0], 1)  # cell_ids[0] is an np.int64, not an int
 ```
 
 They coerce it on the way in and always hand back plain Python `int` ids —
@@ -352,7 +353,7 @@ children = beahiv.get_children(cell_ids)  # same shape as cell_ids, each entry i
 ### pyarrow
 
 `latlon_to_cell` and `bng_to_cell` also take a pyarrow `Array` or
-`ChunkedArray`, and give a `uint64` `Array` back — Arrow in, Arrow out.
+`ChunkedArray`, and give an `int64` `Array` back — Arrow in, Arrow out.
 Nulls arrive as `NaN` and so encode to `INVALID_CELL_ID`:
 
 ```python
@@ -369,7 +370,7 @@ con.create_function(
     "beahiv_cell",
     lambda x, y: beahiv.bng_to_cell(x, y, 202),
     [DOUBLE, DOUBLE],
-    UBIGINT,
+    BIGINT,
     type="arrow",
 )
 ```
@@ -390,7 +391,7 @@ gdf["cell_id"] = beahiv.point_to_cell(gdf, side_length=202)
 
 It accepts a `GeoDataFrame` (its active geometry column is used), a
 `GeoSeries`, a `GeometryArray`, an object ndarray of Shapely points, or a
-plain list, and returns a `uint64` numpy array — never a `Series`, so
+plain list, and returns an `int64` numpy array — never a `Series`, so
 assigning it back is positional and can't realign against a non-default
 index. A single `Point` returns a plain `int`, the same scalar/array
 dispatch the rest of the API uses.

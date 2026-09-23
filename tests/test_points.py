@@ -35,10 +35,10 @@ def test_accepts_list_and_ndarray_of_points():
     assert np.array_equal(point_to_cell(np.asarray(points, dtype=object), 100), expected)
 
 
-def test_returns_plain_uint64_numpy_array():
+def test_returns_plain_int64_numpy_array():
     cell_ids = point_to_cell(_points(_BNG_POINTS), 100)
     assert isinstance(cell_ids, np.ndarray)
-    assert cell_ids.dtype == np.uint64
+    assert cell_ids.dtype == np.int64
 
 
 def test_missing_and_empty_points_become_invalid_cell_id():
@@ -69,7 +69,7 @@ def test_masked_path_agrees_with_the_all_present_fast_path():
 def test_empty_input_returns_empty_array():
     cell_ids = point_to_cell([], 100)
     assert cell_ids.shape == (0,)
-    assert cell_ids.dtype == np.uint64
+    assert cell_ids.dtype == np.int64
 
 
 def test_cells_carry_the_requested_side_length_and_orientation():

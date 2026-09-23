@@ -59,7 +59,7 @@ def point_to_cell(
 ) -> "int | np.ndarray":
     """Encode EPSG:27700 shapely point geometry to cell ids.
 
-    Takes a single `Point` (returning an `int`) or a column of them (returning a `uint64` numpy
+    Takes a single `Point` (returning an `int`) or a column of them (returning an `int64` numpy
     array): a geopandas `GeoDataFrame` (its active geometry column is used), a `GeoSeries`, a
     `GeometryArray`, an object ndarray, or a plain list. Nothing is reprojected -- coordinates must
     already be British National Grid metres, and a geopandas object declaring any other CRS raises.

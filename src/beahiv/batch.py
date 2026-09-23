@@ -24,7 +24,6 @@ from .cell_id import (
     SIDE_LENGTH_MASK,
     SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
-    UINT64_MASK,
 )
 from .coords import SQRT3
 from .orientation import Orientation
@@ -124,19 +123,21 @@ def encode_batch(
     if not (1 <= side_length <= SIDE_LENGTH_MAX):
         raise ValueError(f"side_length must be in [1, {SIDE_LENGTH_MAX}], got {side_length}")
 
-    q_enc = (q + Q_OFFSET).astype(np.uint64)
-    r_enc = (r + R_OFFSET).astype(np.uint64)
+    q_enc = q + Q_OFFSET
+    r_enc = r + R_OFFSET
 
-    if np.any(q_enc > Q_MASK) or np.any(r_enc > R_MASK):
+    if np.any((q_enc < 0) | (q_enc > Q_MASK)) or np.any((r_enc < 0) | (r_enc > R_MASK)):
         raise ValueError("q or r out of representable range")
 
-    cell_ids = (
-        (np.uint64(int(orientation)) << np.uint64(ORIENTATION_SHIFT))
-        | (np.uint64(side_length) << np.uint64(SIDE_LENGTH_SHIFT))
-        | (q_enc << np.uint64(Q_SHIFT))
+    # int64, never uint64: the reserved bits keep every id below 2**61, and a signed dtype is what
+    # a BIGINT column holds without conversion. Mixing uint64 with Python ints/int64 also silently
+    # promotes to float64 in numpy, which loses the low bits of an id.
+    return (
+        (np.int64(int(orientation)) << ORIENTATION_SHIFT)
+        | (np.int64(side_length) << SIDE_LENGTH_SHIFT)
+        | (q_enc << Q_SHIFT)
         | r_enc
     )
-    return cell_ids & np.uint64(UINT64_MASK)
 
 
 def decode_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -182,7 +183,7 @@ def latlon_to_cell_batch(
     valid = ~(np.isnan(lats) | np.isnan(lons))
     _check_in_area_of_use_batch(lats, lons, valid)
 
-    cell_ids = np.full(lats.shape, INVALID_CELL_ID, dtype=np.uint64)
+    cell_ids = np.full(lats.shape, INVALID_CELL_ID, dtype=np.int64)
     if np.any(valid):
         x, y = _TO_BNG.transform(lons[valid], lats[valid])
         q, r = cartesian_to_axial_batch(x, y, side_length, orientation)
@@ -206,7 +207,7 @@ def bng_to_cell_batch(
     y = np.asarray(y, dtype=np.float64)
     valid = ~(np.isnan(x) | np.isnan(y))
 
-    cell_ids = np.full(x.shape, INVALID_CELL_ID, dtype=np.uint64)
+    cell_ids = np.full(x.shape, INVALID_CELL_ID, dtype=np.int64)
     if np.any(valid):
         q, r = cartesian_to_axial_batch(x[valid], y[valid], side_length, orientation)
         cell_ids[valid] = encode_batch(q, r, side_length, orientation)
