@@ -283,6 +283,11 @@ satisfying `N(k) = 1 + 3k(k+1)`.
 
 ### Geometry
 
+BEAHIV uses `shapely` geometry types which also supplies conversion functions
+to convert to/from WKT or WKB format. The latter is essential when implementing UDFs
+for duckdb.
+
+
 Polygons are never stored — `cell_polygon` regenerates six vertices on
 demand from the cell centre, at 30/90/150/210/270/330° (POINTY) or
 0/60/120/180/240/300° (FLAT).
@@ -379,6 +384,9 @@ pyarrow is **not** a runtime dependency: the import happens lazily, on a
 branch only reachable when the caller has already handed us a pyarrow
 object. The `beahiv[arrow]` extra exists to pin a version and advertise
 the capability, not to make the feature work.
+
+See [introducing-beahiv.ipynb](https://github.com/safer-streets/exploratory-data-analysis/blob/main/introducing-beahiv.ipynb)
+for more examples of duckdb UDFs
 
 ### Shapely and geopandas
 
