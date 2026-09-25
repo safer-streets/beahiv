@@ -12,6 +12,8 @@ from pyproj import Transformer
 
 from .cell_id import (
     INVALID_CELL_ID,
+    MEASURE_MASK,
+    MEASURE_SHIFT,
     ORIENTATION_MASK,
     ORIENTATION_SHIFT,
     Q_MASK,
@@ -24,8 +26,10 @@ from .cell_id import (
     SIDE_LENGTH_MASK,
     SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
+    resolve_size,
 )
-from .coords import SQRT3
+from .coords import ORIGIN_X, ORIGIN_Y, SQRT3, side_length_of
+from .measure import SizeMeasure
 from .orientation import Orientation
 
 _TO_BNG = Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=True)
@@ -58,6 +62,7 @@ def axial_to_cartesian_batch(
     side_length: float,
     orientation: Orientation = Orientation.FLAT,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorised `coords.axial_to_cartesian`; `side_length` is likewise the geometric one."""
     q = np.asarray(q, dtype=np.float64)
     r = np.asarray(r, dtype=np.float64)
     s = side_length
@@ -67,7 +72,7 @@ def axial_to_cartesian_batch(
     else:
         x = 1.5 * s * q
         y = s * SQRT3 * (r + q / 2.0)
-    return x, y
+    return ORIGIN_X + x, ORIGIN_Y + y
 
 
 def cartesian_to_axial_batch(
@@ -76,8 +81,8 @@ def cartesian_to_axial_batch(
     side_length: float,
     orientation: Orientation = Orientation.FLAT,
 ) -> tuple[np.ndarray, np.ndarray]:
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64) - ORIGIN_X
+    y = np.asarray(y, dtype=np.float64) - ORIGIN_Y
     s = side_length
 
     if orientation == Orientation.POINTY:
@@ -111,18 +116,24 @@ def cartesian_to_axial_batch(
 def encode_batch(
     q: np.ndarray,
     r: np.ndarray,
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
-    """Encode axial coordinates into int64 cell ids -- see `cell_id.encode` for the layout."""
+    """Encode axial coordinates into int64 cell ids -- see `cell_id.encode` for the layout.
+
+    Give exactly one of `side_length` / `side_to_side`, as for `cell_id.encode`.
+    """
     q = np.asarray(q, dtype=np.int64)
     r = np.asarray(r, dtype=np.int64)
+    size, measure = resolve_size(side_length, side_to_side)
 
-    # side_length doesn't fill its field, so an oversized one would overflow into
+    # size doesn't fill its field, so an oversized one would overflow into
     # the orientation bit rather than being masked off -- one scalar check per
     # call, not per row, so the vectorised path pays nothing for it
-    if not (1 <= side_length <= SIDE_LENGTH_MAX):
-        raise ValueError(f"side_length must be in [1, {SIDE_LENGTH_MAX}], got {side_length}")
+    if not (1 <= size <= SIDE_LENGTH_MAX):
+        raise ValueError(f"size must be in [1, {SIDE_LENGTH_MAX}], got {size}")
 
     q_enc = q + Q_OFFSET
     r_enc = r + R_OFFSET
@@ -130,19 +141,23 @@ def encode_batch(
     if np.any((q_enc < 0) | (q_enc > Q_MASK)) or np.any((r_enc < 0) | (r_enc > R_MASK)):
         raise ValueError("q or r out of representable range")
 
-    # int64, never uint64: the reserved bits keep every id below 2**61, and a signed dtype is what
+    # int64, never uint64: the reserved bits keep every id below 2**62, and a signed dtype is what
     # a BIGINT column holds without conversion. Mixing uint64 with Python ints/int64 also silently
     # promotes to float64 in numpy, which loses the low bits of an id.
     return (
-        (np.int64(int(orientation)) << ORIENTATION_SHIFT)
-        | (np.int64(side_length) << SIDE_LENGTH_SHIFT)
+        (np.int64(int(measure)) << MEASURE_SHIFT)
+        | (np.int64(int(orientation)) << ORIENTATION_SHIFT)
+        | (np.int64(size) << SIDE_LENGTH_SHIFT)
         | (q_enc << Q_SHIFT)
         | r_enc
     )
 
 
-def decode_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return (q, r, side_length, orientation) arrays for a batch of cell ids.
+def decode_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return (q, r, size, measure, orientation) arrays for a batch of cell ids.
+
+    `size` is the stored field, as `CellIndex.size` -- *not* the geometric side length when the
+    measure is SIDE_TO_SIDE (see `coords.side_length_of`).
 
     Rejects the same ids scalar `decode` does (see `cell_id.validate_cell_id`), vectorised: two
     array comparisons for the whole batch rather than a per-row call. Note that the *_to_cell
@@ -159,40 +174,47 @@ def decode_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarra
         # An already-uint64 array needs none of this -- it wraps to a negative and the reserved
         # check below catches it.
         raise ValueError(
-            "cell id(s) too large to be valid: every id encode produces is below 2**61, "
+            "cell id(s) too large to be valid: every id encode produces is below 2**62, "
             "so anything that doesn't fit a signed int64 has reserved bits set"
         ) from exc
 
     orientation = ((cell_ids >> ORIENTATION_SHIFT) & ORIENTATION_MASK).astype(np.uint8)
-    side_length = (cell_ids >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
+    measure = ((cell_ids >> MEASURE_SHIFT) & MEASURE_MASK).astype(np.uint8)
+    size = (cell_ids >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
 
     # a negative id has bit 63 set, which is a reserved bit -- the arithmetic shift keeps
     # those ones, so this rejects it rather than needing a sign check of its own
     reserved = (cell_ids >> RESERVED_SHIFT) & RESERVED_MASK
     if np.any(reserved):
         raise ValueError(f"{int(np.count_nonzero(reserved))} cell id(s) have reserved bits set")
-    invalid = (side_length < 1) | (side_length > SIDE_LENGTH_MAX)
+    invalid = (size < 1) | (size > SIDE_LENGTH_MAX)
     if np.any(invalid):
         n_sentinel = int(np.count_nonzero(cell_ids == INVALID_CELL_ID))
         detail = f" ({n_sentinel} of them INVALID_CELL_ID)" if n_sentinel else ""
         raise ValueError(
-            f"{int(np.count_nonzero(invalid))} cell id(s) have a side_length outside "
+            f"{int(np.count_nonzero(invalid))} cell id(s) have a size outside "
             f"the encodable [1, {SIDE_LENGTH_MAX}]{detail}"
         )
 
     q_enc = (cell_ids >> Q_SHIFT) & Q_MASK
     r_enc = cell_ids & R_MASK
 
-    return q_enc - Q_OFFSET, r_enc - R_OFFSET, side_length, orientation
+    return q_enc - Q_OFFSET, r_enc - R_OFFSET, size, measure, orientation
 
 
 def latlon_to_cell_batch(
     lats: ArrayLike,
     lons: ArrayLike,
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
-    """Encode each (lat, lon) pair; NaN coordinates map to INVALID_CELL_ID."""
+    """Encode each (lat, lon) pair; NaN coordinates map to INVALID_CELL_ID.
+
+    Give exactly one of `side_length` / `side_to_side`, as for `cell_id.encode`.
+    """
+    s = side_length_of(*resolve_size(side_length, side_to_side))
     lats = np.asarray(lats, dtype=np.float64)
     lons = np.asarray(lons, dtype=np.float64)
     valid = ~(np.isnan(lats) | np.isnan(lons))
@@ -201,15 +223,19 @@ def latlon_to_cell_batch(
     cell_ids = np.full(lats.shape, INVALID_CELL_ID, dtype=np.int64)
     if np.any(valid):
         x, y = _TO_BNG.transform(lons[valid], lats[valid])
-        q, r = cartesian_to_axial_batch(x, y, side_length, orientation)
-        cell_ids[valid] = encode_batch(q, r, side_length, orientation)
+        q, r = cartesian_to_axial_batch(x, y, s, orientation)
+        cell_ids[valid] = encode_batch(
+            q, r, side_length=side_length, orientation=orientation, side_to_side=side_to_side
+        )
     return cell_ids
 
 
 def bng_to_cell_batch(
     x: ArrayLike,
     y: ArrayLike,
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode each EPSG:27700 (x, y) pair; NaN coordinates map to INVALID_CELL_ID.
@@ -217,34 +243,44 @@ def bng_to_cell_batch(
     No area-of-use check: unlike the lat/lon path there is no projection to extrapolate, so a
     coordinate far outside GB is simply a cell far from the origin — and one far enough to exceed
     the q/r bit budget is rejected by ``encode_batch`` rather than wrapping silently.
+
+    Give exactly one of `side_length` / `side_to_side`, as for `cell_id.encode`.
     """
+    s = side_length_of(*resolve_size(side_length, side_to_side))
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     valid = ~(np.isnan(x) | np.isnan(y))
 
     cell_ids = np.full(x.shape, INVALID_CELL_ID, dtype=np.int64)
     if np.any(valid):
-        q, r = cartesian_to_axial_batch(x[valid], y[valid], side_length, orientation)
-        cell_ids[valid] = encode_batch(q, r, side_length, orientation)
+        q, r = cartesian_to_axial_batch(x[valid], y[valid], s, orientation)
+        cell_ids[valid] = encode_batch(
+            q, r, side_length=side_length, orientation=orientation, side_to_side=side_to_side
+        )
     return cell_ids
 
 
 def cell_centre_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     """Return EPSG:27700 (x, y) centres for a batch of cell ids.
 
-    Every cell must share the same side_length and orientation -- a single
+    Every cell must share the same size, orientation and measure -- a single
     axial_to_cartesian_batch call can't mix them.
     """
-    q, r, side_length, orientation = decode_batch(cell_ids)
+    q, r, size, measure, orientation = decode_batch(cell_ids)
     orientations = np.unique(orientation)
     if len(orientations) > 1:
         raise ValueError("cell_centre_batch requires a single orientation per call")
 
-    lengths = np.unique(side_length)
-    if len(lengths) > 1:
-        raise ValueError("cell_centre_batch requires a single side_length per call")
+    sizes = np.unique(size)
+    if len(sizes) > 1:
+        raise ValueError("cell_centre_batch requires a single size per call")
 
-    return axial_to_cartesian_batch(q, r, int(lengths[0]), Orientation(int(orientations[0])))
+    measures = np.unique(measure)
+    if len(measures) > 1:
+        raise ValueError("cell_centre_batch requires a single size measure per call")
+
+    s = side_length_of(int(sizes[0]), SizeMeasure(int(measures[0])))
+    return axial_to_cartesian_batch(q, r, s, Orientation(int(orientations[0])))
 
 
 def cell_to_latlon_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:

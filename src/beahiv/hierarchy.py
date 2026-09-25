@@ -1,6 +1,7 @@
 """Parent/child lookups between cells at 2x/0.5x side_length.
 
-`axial_to_cartesian(q, r, side_length, ...)` is linear in (q, r), so a cell at `side_length` shares
+`axial_to_cartesian(q, r, side_length, ...)` is linear in (q, r) about an origin every side_length
+shares (`coords.ORIGIN_X`/`ORIGIN_Y`), so a cell at `side_length` shares
 its exact centroid with a cell at `2 * side_length` iff `(Q, R) = (q / 2, r / 2)` is itself integer
 (i.e. `q` and `r` are both even), and with a cell at `side_length / 2` iff `side_length` is itself
 even (the child is always `(2 * q, 2 * r)`, exactly -- doubling q/r is always an integer, unlike
@@ -28,6 +29,10 @@ metres, so an odd one means the 0.5x grid doesn't exist at all and there is noth
 a different failure from a cell that merely doesn't line up with a grid that does exist. Doubling
 past `SIDE_LENGTH_MAX` likewise raises, from `encode`.
 
+"side_length" throughout means the cell's stored size, whichever measure it is in: a SIDE_TO_SIDE
+cell's relatives are SIDE_TO_SIDE cells at 2x/0.5x its side-to-side distance, which is the same
+geometric 2x/0.5x, so everything above holds unchanged.
+
 `get_parent`/`get_child` take a scalar cell id only. `get_parents`/`get_children` also accept an
 array-like of ids, and return the union -- one flat, sorted int64 array of every overlapping cell,
 each once. Neighbouring inputs share most of their parents and children, and the covering of a set
@@ -41,7 +46,7 @@ from typing import SupportsIndex, TypeGuard, cast, overload
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .cell_id import decode, encode
+from .cell_id import decode, encode_size
 from .neighbours import k_ring
 
 
@@ -67,24 +72,24 @@ def _get_parents_array(cell_ids: ArrayLike) -> np.ndarray:
 
 def _get_parents_scalar(cell_id: SupportsIndex) -> tuple[int, ...]:
     idx = decode(cell_id)
-    double = idx.side_length * 2
+    double = idx.size * 2
     match idx.q % 2, idx.r % 2:
         case 0, 0:
-            return (encode(idx.q // 2, idx.r // 2, double, idx.orientation),)
+            return (encode_size(idx.q // 2, idx.r // 2, double, idx.measure, idx.orientation),)
         case 0, 1:
             return (
-                encode(idx.q // 2, (idx.r - 1) // 2, double, idx.orientation),
-                encode(idx.q // 2, (idx.r + 1) // 2, double, idx.orientation),
+                encode_size(idx.q // 2, (idx.r - 1) // 2, double, idx.measure, idx.orientation),
+                encode_size(idx.q // 2, (idx.r + 1) // 2, double, idx.measure, idx.orientation),
             )
         case 1, 0:
             return (
-                encode(idx.q // 2, idx.r // 2, double, idx.orientation),
-                encode(idx.q // 2 + 1, idx.r // 2, double, idx.orientation),
+                encode_size(idx.q // 2, idx.r // 2, double, idx.measure, idx.orientation),
+                encode_size(idx.q // 2 + 1, idx.r // 2, double, idx.measure, idx.orientation),
             )
         case _:  # 1, 1
             return (
-                encode(idx.q // 2 + 1, idx.r // 2, double, idx.orientation),
-                encode(idx.q // 2, idx.r // 2 + 1, double, idx.orientation),
+                encode_size(idx.q // 2 + 1, idx.r // 2, double, idx.measure, idx.orientation),
+                encode_size(idx.q // 2, idx.r // 2 + 1, double, idx.measure, idx.orientation),
             )
 
 
@@ -110,7 +115,7 @@ def get_parent(cell_id: SupportsIndex) -> int | None:
     idx = decode(cell_id)
     if idx.q % 2 != 0 or idx.r % 2 != 0:
         return None
-    return encode(idx.q // 2, idx.r // 2, idx.side_length * 2, idx.orientation)
+    return encode_size(idx.q // 2, idx.r // 2, idx.size * 2, idx.measure, idx.orientation)
 
 
 @overload
@@ -143,9 +148,9 @@ def get_child(cell_id: SupportsIndex) -> int:
     Raises ValueError if side_length is odd -- there is no 0.5x grid at all.
     """
     idx = decode(cell_id)
-    if idx.side_length % 2 != 0:
-        raise ValueError(f"no 0.5x side_length cell shares this cell's centroid: side_length={idx.side_length} is odd")
-    return encode(idx.q * 2, idx.r * 2, idx.side_length // 2, idx.orientation)
+    if idx.size % 2 != 0:
+        raise ValueError(f"no 0.5x size cell shares this cell's centroid: size={idx.size} is odd")
+    return encode_size(idx.q * 2, idx.r * 2, idx.size // 2, idx.measure, idx.orientation)
 
 
 @overload

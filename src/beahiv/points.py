@@ -19,7 +19,7 @@ from numpy.typing import ArrayLike
 from shapely import Point
 
 from .batch import bng_to_cell_batch
-from .cell_id import INVALID_CELL_ID
+from .cell_id import INVALID_CELL_ID, resolve_size
 from .geo import bng_to_cell
 from .orientation import Orientation
 
@@ -49,12 +49,26 @@ def _check_crs(points: object) -> None:
 
 
 @overload
-def point_to_cell(points: Point | None, side_length: int, orientation: Orientation = ...) -> int: ...
+def point_to_cell(
+    points: Point | None,
+    *,
+    side_length: int | None = ...,
+    side_to_side: int | None = ...,
+    orientation: Orientation = ...,
+) -> int: ...
 @overload
-def point_to_cell(points: ArrayLike, side_length: int, orientation: Orientation = ...) -> np.ndarray: ...
+def point_to_cell(
+    points: ArrayLike,
+    *,
+    side_length: int | None = ...,
+    side_to_side: int | None = ...,
+    orientation: Orientation = ...,
+) -> np.ndarray: ...
 def point_to_cell(
     points: "ArrayLike | Point | None",
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> "int | np.ndarray":
     """Encode EPSG:27700 shapely point geometry to cell ids.
@@ -63,6 +77,8 @@ def point_to_cell(
     array): a geopandas `GeoDataFrame` (its active geometry column is used), a `GeoSeries`, a
     `GeometryArray`, an object ndarray, or a plain list. Nothing is reprojected -- coordinates must
     already be British National Grid metres, and a geopandas object declaring any other CRS raises.
+
+    Give exactly one of `side_length` / `side_to_side`, as for `latlon_to_cell`.
 
     The array form returns numpy rather than a `Series` so that assigning it back
     (`gdf["cell_id"] = point_to_cell(gdf, 100)`) is positional and cannot silently misalign against
@@ -75,18 +91,24 @@ def point_to_cell(
     times the encode itself, so a hot scalar loop is better off calling `bng_to_cell(p.x, p.y, ...)`.
     """
     _check_crs(points)
+    # resolved up front so a bad size raises even when every point is missing
+    resolve_size(side_length, side_to_side)
     if points is None or isinstance(points, Point):
-        return _encode_one(points, side_length, orientation)
-    return _encode_many(points, side_length, orientation)
+        return _encode_one(points, side_length, orientation, side_to_side)
+    return _encode_many(points, side_length, orientation, side_to_side)
 
 
-def _encode_one(point: Point | None, side_length: int, orientation: Orientation) -> int:
+def _encode_one(
+    point: Point | None, side_length: int | None, orientation: Orientation, side_to_side: int | None
+) -> int:
     if point is None or point.is_empty:
         return INVALID_CELL_ID
-    return bng_to_cell(point.x, point.y, side_length, orientation)
+    return bng_to_cell(point.x, point.y, side_length=side_length, orientation=orientation, side_to_side=side_to_side)
 
 
-def _encode_many(points: ArrayLike, side_length: int, orientation: Orientation) -> np.ndarray:
+def _encode_many(
+    points: ArrayLike, side_length: int | None, orientation: Orientation, side_to_side: int | None
+) -> np.ndarray:
     geoms = np.asarray(getattr(points, "geometry", points), dtype=object)
 
     type_ids = shapely.get_type_id(geoms)
@@ -108,4 +130,4 @@ def _encode_many(points: ArrayLike, side_length: int, orientation: Orientation) 
         x[present] = shapely.get_x(geoms[present])
         y[present] = shapely.get_y(geoms[present])
 
-    return bng_to_cell_batch(x, y, side_length, orientation)
+    return bng_to_cell_batch(x, y, side_length=side_length, orientation=orientation, side_to_side=side_to_side)
