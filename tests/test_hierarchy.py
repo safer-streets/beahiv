@@ -184,21 +184,36 @@ def test_lookups_accept_numpy_integer_ids():
     assert get_children(np.int64(cell_id)) == get_children(cell_id)
 
 
-@pytest.mark.parametrize("lookup", [get_parent, get_parents, get_child, get_children])
-def test_hierarchy_lookups_accept_array_like_ids(lookup):
-    # (4, -6) has a same-centroid parent, (3, -6) doesn't, so get_parent gives an id and a None.
+def test_get_child_accepts_array_like_ids():
     cell_ids = np.array([encode(4, -6, 100), encode(3, -6, 100), encode(0, 0, 100)], dtype=np.uint64)
 
-    result = lookup(cell_ids)
+    result = get_child(cell_ids)
 
     assert isinstance(result, np.ndarray)
     assert result.dtype == object
     assert result.shape == cell_ids.shape
-    # Compared as a list, not with np.array_equal against a np.array of the expected entries: the
-    # equal-length tuples from get_children would collapse into a 2-D array of ids, which is not
-    # what these functions return (and never compares equal to the 1-D array of tuples they do).
-    assert result.tolist() == [lookup(cell_id) for cell_id in cell_ids]
+    assert result.tolist() == [get_child(cell_id) for cell_id in cell_ids]
 
     # A plain (nested) list is array-like too, and the shape is whatever was handed in.
-    assert lookup(cell_ids.tolist()).tolist() == result.tolist()
-    assert lookup(cell_ids[:2].reshape(2, 1)).tolist() == [[result[0]], [result[1]]]
+    assert get_child(cell_ids.tolist()).tolist() == result.tolist()
+    assert get_child(cell_ids[:2].reshape(2, 1).tolist()).tolist() == [[result[0]], [result[1]]]
+
+
+@pytest.mark.parametrize("lookup", [get_parents, get_children])
+def test_overlapping_lookups_on_arrays_return_the_deduplicated_union(lookup):
+    # Adjacent cells share parents and children, so the union is smaller than the sum.
+    cell_ids = np.array([encode(4, -6, 100), encode(3, -6, 100), encode(2, -6, 100)], dtype=np.uint64)
+    expected = sorted(set().union(*(lookup(cell_id) for cell_id in cell_ids)))
+    assert len(expected) < sum(len(lookup(cell_id)) for cell_id in cell_ids)
+
+    result = lookup(cell_ids)
+
+    assert isinstance(result, np.ndarray)
+    assert result.dtype == np.int64
+    assert result.tolist() == expected
+
+    # Input shape and container don't matter, nor do repeated ids.
+    assert lookup(cell_ids.tolist()).tolist() == expected
+    assert lookup(cell_ids.reshape(3, 1)).tolist() == expected
+    assert lookup(np.concatenate([cell_ids, cell_ids])).tolist() == expected
+    assert lookup([]).tolist() == []

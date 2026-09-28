@@ -7,6 +7,23 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Array `get_parents`/`get_children` return the deduplicated union; `get_parent` scalar-only
+
+- **Why** — Array input used to return a same-shape object array holding one tuple per id.
+  Neighbouring cells share most of their parents and children, so callers had to flatten the
+  tuples and drop the duplicates themselves before they had a usable covering.
+- **What**
+  - [src/beahiv/hierarchy.py](src/beahiv/hierarchy.py): the array branch of `get_parents`/`get_children`
+    now returns one flat, sorted `int64` array of every overlapping cell, each once, whatever the
+    input shape. `get_child` is unchanged (same-shape object array).
+  - `get_parent` is now scalar-only: its array form was mostly `None`, since most cells have no
+    same-centroid parent. An array passed to it now raises TypeError from `decode`.
+  - Tests and README updated to match.
+- **Design decisions** — `int64`, not object: ids sit below 2**61 (see `cell_id`), and `batch.py`
+  already returns them as `int64`. The input shape is dropped because a union has no per-input
+  shape to keep. Sorted order comes free from `np.unique`.
+- **Follow-ups** — None.
+
 ## Drop the Shapely import allowlist, keep the spatial-predicate rule
 
 - **Why** — AGENTS.md rule 6 named `polyfill.py`, `points.py` and `geometry.py` as the only modules
