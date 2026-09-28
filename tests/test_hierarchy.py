@@ -184,19 +184,10 @@ def test_lookups_accept_numpy_integer_ids():
     assert get_children(np.int64(cell_id)) == get_children(cell_id)
 
 
-def test_get_child_accepts_array_like_ids():
-    cell_ids = np.array([encode(4, -6, 100), encode(3, -6, 100), encode(0, 0, 100)], dtype=np.uint64)
-
-    result = get_child(cell_ids)
-
-    assert isinstance(result, np.ndarray)
-    assert result.dtype == object
-    assert result.shape == cell_ids.shape
-    assert result.tolist() == [get_child(cell_id) for cell_id in cell_ids]
-
-    # A plain (nested) list is array-like too, and the shape is whatever was handed in.
-    assert get_child(cell_ids.tolist()).tolist() == result.tolist()
-    assert get_child(cell_ids[:2].reshape(2, 1).tolist()).tolist() == [[result[0]], [result[1]]]
+@pytest.mark.parametrize("lookup", [get_parent, get_child])
+def test_same_centroid_lookups_are_scalar_only(lookup):
+    with pytest.raises(TypeError):
+        lookup(np.array([encode(4, -6, 100), encode(0, 0, 100)], dtype=np.uint64))
 
 
 @pytest.mark.parametrize("lookup", [get_parents, get_children])

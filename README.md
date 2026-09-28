@@ -362,16 +362,15 @@ beahiv.k_ring(cell_ids[0], 1)  # cell_ids[0] is an np.int64, not an int
 They coerce it on the way in and always hand back plain Python `int` ids —
 nothing downstream inherits numpy's fixed-width overflow behaviour.
 
-The hierarchy helpers, apart from the scalar-only `get_parent`, follow the
-same pattern for many ids at once: pass a list, numpy array, or pandas
-Series. `get_child` gives a same-shape array of results back; the
-overlapping lookups instead return the union -- a flat, sorted `int64` array
-of every overlapping cell, each once, since neighbouring cells share most of
-their parents and children:
+The overlapping hierarchy lookups also take many ids at once -- a list,
+numpy array, or pandas Series -- and return the union: a flat, sorted
+`int64` array of every overlapping cell, each once, since neighbouring cells
+share most of their parents and children. The same-centroid
+`get_parent`/`get_child` are scalar-only.
 
 ```python
-child = beahiv.get_child(cell_ids)  # same shape as cell_ids, dtype=object
 parents = beahiv.get_parents(cell_ids)  # 1-D int64, duplicates dropped
+children = beahiv.get_children(cell_ids)  # likewise
 ```
 
 ### pyarrow
@@ -643,7 +642,7 @@ Property tests cover:
 | `distance(cell_a, cell_b)` | Hex grid distance |
 | `k_ring(cell_id, k)` | All cells within `k` hops |
 | `get_parent(cell_id)` | Cell at 2x `side_length` sharing this cell's exact centroid, or `None` if `q`/`r` aren't both even; single id only |
-| `get_child(cell_id)` | Cell at `side_length / 2` sharing this cell's exact centroid — always `(2q, 2r)`; accepts a single id or an array-like of ids |
+| `get_child(cell_id)` | Cell at `side_length / 2` sharing this cell's exact centroid — always `(2q, 2r)`; single id only |
 | `get_parents(cell_id)` | Every cell at 2x `side_length` overlapping this one — 1 if it nests exactly, else the 2 it straddles; array input gives the deduplicated union |
 | `get_children(cell_id)` | Every cell at `side_length / 2` overlapping this one — always 7, covering it with 75% overspill; array input gives the deduplicated union |
 | `encode_morton` / `decode_morton` | Z-order variant of `encode`/`decode` |

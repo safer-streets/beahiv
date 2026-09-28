@@ -28,11 +28,10 @@ metres, so an odd one means the 0.5x grid doesn't exist at all and there is noth
 a different failure from a cell that merely doesn't line up with a grid that does exist. Doubling
 past `SIDE_LENGTH_MAX` likewise raises, from `encode`.
 
-`get_parent` takes a scalar cell id only. The other three also accept an array-like of ids:
-`get_child` returns a same-shape array of results, while `get_parents`/`get_children` return the
-union -- one flat, sorted int64 array of every overlapping cell, each once. Neighbouring inputs
-share most of their parents and children, and the covering of a set of cells is what array callers
-want, not a ragged array of tuples.
+`get_parent`/`get_child` take a scalar cell id only. `get_parents`/`get_children` also accept an
+array-like of ids, and return the union -- one flat, sorted int64 array of every overlapping cell,
+each once. Neighbouring inputs share most of their parents and children, and the covering of a set
+of cells is what array callers want, not a ragged array of tuples.
 """
 
 from collections.abc import Iterable
@@ -89,28 +88,13 @@ def _get_parents_scalar(cell_id: SupportsIndex) -> tuple[int, ...]:
             )
 
 
-def _get_child_scalar(cell_id: SupportsIndex) -> int:
-    idx = decode(cell_id)
-    if idx.side_length % 2 != 0:
-        raise ValueError(f"no 0.5x side_length cell shares this cell's centroid: side_length={idx.side_length} is odd")
-    return encode(idx.q * 2, idx.r * 2, idx.side_length // 2, idx.orientation)
-
-
-def _get_child_array(cell_ids: ArrayLike) -> np.ndarray:
-    ids = np.asarray(cell_ids)
-    out = np.empty(ids.shape, dtype=object)
-    for index in np.ndindex(ids.shape):
-        out[index] = _get_child_scalar(ids[index])
-    return out
-
-
 def _get_children_array(cell_ids: ArrayLike) -> np.ndarray:
     ids = np.asarray(cell_ids).ravel()
     return _unique_ids(_get_children_scalar(cell_id) for cell_id in ids)
 
 
 def _get_children_scalar(cell_id: SupportsIndex) -> tuple[int, ...]:
-    return k_ring(_get_child_scalar(cell_id), 1)
+    return k_ring(get_child(cell_id), 1)
 
 
 def get_parent(cell_id: SupportsIndex) -> int | None:
@@ -149,23 +133,19 @@ def get_parents(cell_id: SupportsIndex | ArrayLike) -> tuple[int, ...] | np.ndar
     return _get_parents_array(cast("ArrayLike", cell_id))
 
 
-@overload
-def get_child(cell_id: SupportsIndex) -> int: ...
-@overload
-def get_child(cell_id: ArrayLike) -> np.ndarray: ...
-def get_child(cell_id: SupportsIndex | ArrayLike) -> int | np.ndarray:
+def get_child(cell_id: SupportsIndex) -> int:
     """Return the id of the cell at side_length / 2 sharing this cell's exact centroid.
 
     Always exists when side_length is even, and is always `(2q, 2r)`.
 
-    Accepts either a single cell id or an array-like of ids; array input returns a same-shape
-    object array with one result per id.
+    Scalar only, like `get_parent`: the same-centroid lookups answer a question about one cell.
 
     Raises ValueError if side_length is odd -- there is no 0.5x grid at all.
     """
-    if _is_scalar_id(cell_id):
-        return _get_child_scalar(cell_id)
-    return _get_child_array(cast("ArrayLike", cell_id))
+    idx = decode(cell_id)
+    if idx.side_length % 2 != 0:
+        raise ValueError(f"no 0.5x side_length cell shares this cell's centroid: side_length={idx.side_length} is odd")
+    return encode(idx.q * 2, idx.r * 2, idx.side_length // 2, idx.orientation)
 
 
 @overload

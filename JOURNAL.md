@@ -7,7 +7,7 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
-## Array `get_parents`/`get_children` return the deduplicated union; `get_parent` scalar-only
+## Array `get_parents`/`get_children` return the deduplicated union; `get_parent`/`get_child` scalar-only
 
 - **Why** — Array input used to return a same-shape object array holding one tuple per id.
   Neighbouring cells share most of their parents and children, so callers had to flatten the
@@ -15,9 +15,10 @@ Write the entry as part of the change, not after the fact.
 - **What**
   - [src/beahiv/hierarchy.py](src/beahiv/hierarchy.py): the array branch of `get_parents`/`get_children`
     now returns one flat, sorted `int64` array of every overlapping cell, each once, whatever the
-    input shape. `get_child` is unchanged (same-shape object array).
-  - `get_parent` is now scalar-only: its array form was mostly `None`, since most cells have no
-    same-centroid parent. An array passed to it now raises TypeError from `decode`.
+    input shape.
+  - `get_parent`/`get_child` are now scalar-only: the same-centroid lookups answer a question
+    about one cell, and `get_parent`'s array form was mostly `None` anyway, since most cells have
+    no same-centroid parent. An array passed to either now raises TypeError from `decode`.
   - Tests and README updated to match.
 - **Design decisions** — `int64`, not object: ids sit below 2**61 (see `cell_id`), and `batch.py`
   already returns them as `int64`. The input shape is dropped because a union has no per-input
