@@ -19,7 +19,7 @@ The library is small enough to read in full; do that before extending it. Key mo
 | [orientation.py](src/beahiv/orientation.py) | `Orientation` enum (POINTY/FLAT) — see the "Orientation" gotcha below |
 | [coords.py](src/beahiv/coords.py) | Scalar axial ↔ Cartesian (EPSG:27700 metres) conversion, cube-coordinate rounding |
 | [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex` |
-| [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (no vectorised forms) |
+| [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (array input gives the deduplicated union) |
 | [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
 | [geo.py](src/beahiv/geo.py) | Public geographic interface: `latlon_to_cell`, `bng_to_cell` (WGS84 ↔ EPSG:27700 ↔ cell id), plus `_cell_centre`, the scalar centre lookup behind `geometry.centroid` |
 | [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry, nothing stored: `cell_polygon`/`cell_polygons` → Shapely `Polygon`(s), `centroid`/`centroids` → Shapely `Point`(s) |
