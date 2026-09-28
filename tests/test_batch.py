@@ -1,9 +1,10 @@
 import numpy as np
 import pytest
 
-from beahiv import Orientation, decode, encode
+from beahiv import Orientation, SizeMeasure, decode, encode
 from beahiv.batch import (
     bng_to_cell_batch,
+    cell_centre_batch,
     cell_to_latlon_batch,
     decode_batch,
     encode_batch,
@@ -30,8 +31,11 @@ def test_encode_batch_matches_scalar_encode():
     r = rng.integers(-1000, 1000, size=500)
     side_length = 250
 
-    batch_ids = encode_batch(q, r, side_length, Orientation.POINTY)
-    scalar_ids = [encode(int(qi), int(ri), side_length, Orientation.POINTY) for qi, ri in zip(q, r, strict=True)]
+    batch_ids = encode_batch(q, r, side_length=side_length, orientation=Orientation.POINTY)
+    scalar_ids = [
+        encode(int(qi), int(ri), side_length=side_length, orientation=Orientation.POINTY)
+        for qi, ri in zip(q, r, strict=True)
+    ]
 
     assert list(batch_ids.astype(object)) == scalar_ids
 
@@ -42,15 +46,15 @@ def test_batch_encoders_return_signed_int64():
     numpy promotes uint64 to float64 against any signed int, so arithmetic or a comparison
     against an id from the scalar path silently loses precision at these magnitudes; pandas
     and Arrow/BIGINT columns want the signed type too. The reserved bits keep every id below
-    2**61, so nothing is given up by signing it.
+    2**62, so nothing is given up by signing it.
     """
-    ids = encode_batch(np.array([4, -6]), np.array([-6, 4]), 100)
+    ids = encode_batch(np.array([4, -6]), np.array([-6, 4]), side_length=100)
     assert ids.dtype == np.int64
     assert (ids > 0).all()
 
-    assert bng_to_cell_batch([530000.0], [180000.0], 100).dtype == np.int64
-    assert latlon_to_cell_batch([51.5074], [-0.1278], 100).dtype == np.int64
-    assert bng_to_cell(np.array([530000.0]), np.array([180000.0]), 100).dtype == np.int64
+    assert bng_to_cell_batch([530000.0], [180000.0], side_length=100).dtype == np.int64
+    assert latlon_to_cell_batch([51.5074], [-0.1278], side_length=100).dtype == np.int64
+    assert bng_to_cell(np.array([530000.0]), np.array([180000.0]), side_length=100).dtype == np.int64
 
     # the promotion the signed type avoids: uint64 - int64 would land in float64
     assert (ids - np.int64(1)).dtype == np.int64
@@ -58,7 +62,7 @@ def test_batch_encoders_return_signed_int64():
 
 def test_decode_batch_still_accepts_uint64_ids():
     """Ids stored before the switch, or read back from an unsigned column, decode unchanged."""
-    cell_ids = [encode(4, -6, 100), encode(-6, 4, 100)]
+    cell_ids = [encode(4, -6, side_length=100), encode(-6, 4, side_length=100)]
     unsigned = decode_batch(np.array(cell_ids, dtype=np.uint64))
     signed = decode_batch(np.array(cell_ids, dtype=np.int64))
 
@@ -75,9 +79,9 @@ def test_encode_batch_rejects_side_lengths_the_scalar_path_rejects(side_length):
     q = np.array([0, 1])
     r = np.array([0, 1])
     with pytest.raises(ValueError):
-        encode_batch(q, r, side_length, Orientation.FLAT)
+        encode_batch(q, r, side_length=side_length, orientation=Orientation.FLAT)
     with pytest.raises(ValueError):
-        encode(0, 0, side_length, Orientation.FLAT)
+        encode(0, 0, side_length=side_length, orientation=Orientation.FLAT)
 
 
 @pytest.mark.parametrize(
@@ -93,22 +97,22 @@ def test_encode_batch_rejects_q_r_the_scalar_path_rejects(q, r):
     """Both edges of each field: in int64 a too-negative q/r no longer wraps round to a huge
     value that the upper-bound check would catch, so the lower bound needs its own check."""
     with pytest.raises(ValueError):
-        encode(q, r, 100)
+        encode(q, r, side_length=100)
     with pytest.raises(ValueError, match="representable range"):
-        encode_batch(np.array([0, q]), np.array([0, r]), 100)
+        encode_batch(np.array([0, q]), np.array([0, r]), side_length=100)
 
 
 @pytest.mark.parametrize(
     "encode_fn",
     [
-        lambda: encode_batch(np.array([4, -4]), np.array([-6, 6]), 100),
-        lambda: encode_batch(np.array([], dtype=np.int64), np.array([], dtype=np.int64), 100),
-        lambda: latlon_to_cell_batch([51.5074, np.nan], [-0.1278, np.nan], 100),
-        lambda: latlon_to_cell_batch([np.nan], [np.nan], 100),
-        lambda: bng_to_cell_batch([530034.0, np.nan], [180381.0, np.nan], 100),
-        lambda: bng_to_cell_batch([], [], 100),
-        lambda: latlon_to_cell([51.5074], [-0.1278], 100),
-        lambda: bng_to_cell([530034.0], [180381.0], 100),
+        lambda: encode_batch(np.array([4, -4]), np.array([-6, 6]), side_length=100),
+        lambda: encode_batch(np.array([], dtype=np.int64), np.array([], dtype=np.int64), side_length=100),
+        lambda: latlon_to_cell_batch([51.5074, np.nan], [-0.1278, np.nan], side_length=100),
+        lambda: latlon_to_cell_batch([np.nan], [np.nan], side_length=100),
+        lambda: bng_to_cell_batch([530034.0, np.nan], [180381.0, np.nan], side_length=100),
+        lambda: bng_to_cell_batch([], [], side_length=100),
+        lambda: latlon_to_cell([51.5074], [-0.1278], side_length=100),
+        lambda: bng_to_cell([530034.0], [180381.0], side_length=100),
     ],
 )
 def test_cell_id_arrays_are_int64_never_uint64(encode_fn):
@@ -129,22 +133,23 @@ def test_decode_batch_matches_scalar_decode():
     side_length = 500
     orientation = Orientation.FLAT
 
-    batch_ids = encode_batch(q, r, side_length, orientation)
-    dq, dr, ds, do = decode_batch(batch_ids)
+    batch_ids = encode_batch(q, r, side_length=side_length, orientation=orientation)
+    dq, dr, ds, dm, do = decode_batch(batch_ids)
 
     for i in range(len(q)):
         idx = decode(int(batch_ids[i]))
         assert idx.q == dq[i]
         assert idx.r == dr[i]
-        assert idx.side_length == ds[i]
+        assert idx.size == ds[i]
         assert idx.orientation == do[i]
+        assert idx.measure == dm[i]
 
 
 def test_decode_batch_rejects_what_scalar_decode_rejects():
     """Scalar/batch parity applies to the rejection contract, not just the arithmetic."""
-    valid = encode(4, -6, 100)
+    valid = encode(4, -6, side_length=100)
     rejected = [
-        valid | (0b101 << RESERVED_SHIFT),  # reserved bits set
+        valid | (0b10 << RESERVED_SHIFT),  # reserved bits set (bit 63, so also >= 2**63 unsigned)
         valid & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT),  # side_length 0
         valid & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT) | ((SIDE_LENGTH_MAX + 1) << SIDE_LENGTH_SHIFT),
         INVALID_CELL_ID,
@@ -165,14 +170,14 @@ def test_decode_batch_rejects_what_scalar_decode_rejects():
 def test_decode_batch_reports_the_sentinel_by_name():
     """The overwhelmingly likely cause of a bad id in a batch is an unfiltered missing-input
     sentinel, so the error says so rather than only quoting an out-of-range side_length."""
-    cell_ids = np.array([encode(4, -6, 100), INVALID_CELL_ID], dtype=np.uint64)
+    cell_ids = np.array([encode(4, -6, side_length=100), INVALID_CELL_ID], dtype=np.uint64)
     with pytest.raises(ValueError, match="INVALID_CELL_ID"):
         decode_batch(cell_ids)
 
 
 def test_decode_batch_accepts_an_empty_array():
-    dq, dr, ds, do = decode_batch(np.array([], dtype=np.uint64))
-    assert len(dq) == len(dr) == len(ds) == len(do) == 0
+    dq, dr, ds, dm, do = decode_batch(np.array([], dtype=np.uint64))
+    assert len(dq) == len(dr) == len(ds) == len(do) == len(dm) == 0
 
 
 def test_latlon_to_cell_batch_matches_scalar():
@@ -180,9 +185,9 @@ def test_latlon_to_cell_batch_matches_scalar():
     lons = np.array([-0.1278, -3.1883, -3.1791])
     side_length = 1000
 
-    batch_ids = latlon_to_cell_batch(lats, lons, side_length, Orientation.POINTY)
+    batch_ids = latlon_to_cell_batch(lats, lons, side_length=side_length, orientation=Orientation.POINTY)
     scalar_ids = [
-        latlon_to_cell(float(lat), float(lon), side_length, Orientation.POINTY)
+        latlon_to_cell(float(lat), float(lon), side_length=side_length, orientation=Orientation.POINTY)
         for lat, lon in zip(lats, lons, strict=True)
     ]
 
@@ -194,7 +199,7 @@ def test_cell_to_latlon_batch_matches_scalar():
     lons = np.array([-0.1278, -3.1883, -3.1791])
     side_length = 1000
 
-    batch_ids = latlon_to_cell_batch(lats, lons, side_length, Orientation.POINTY)
+    batch_ids = latlon_to_cell_batch(lats, lons, side_length=side_length, orientation=Orientation.POINTY)
     batch_lat, batch_lon = cell_to_latlon_batch(batch_ids)
 
     for i in range(len(lats)):
@@ -224,8 +229,11 @@ def test_bng_to_cell_batch_matches_scalar():
     y = rng.uniform(50_000, 900_000, size=200)
     side_length = 202
 
-    batch_ids = bng_to_cell_batch(x, y, side_length, Orientation.FLAT)
-    scalar_ids = [bng_to_cell(float(xi), float(yi), side_length, Orientation.FLAT) for xi, yi in zip(x, y, strict=True)]
+    batch_ids = bng_to_cell_batch(x, y, side_length=side_length, orientation=Orientation.FLAT)
+    scalar_ids = [
+        bng_to_cell(float(xi), float(yi), side_length=side_length, orientation=Orientation.FLAT)
+        for xi, yi in zip(x, y, strict=True)
+    ]
 
     assert list(batch_ids.astype(object)) == scalar_ids
 
@@ -237,7 +245,7 @@ def test_bng_to_cell_batch_maps_nan_to_invalid():
 
     ids = bng_to_cell_batch(x, y, side_length=202)
 
-    assert ids[0] == bng_to_cell(530034.0, 180381.0, 202)
+    assert ids[0] == bng_to_cell(530034.0, 180381.0, side_length=202)
     assert ids[1] == 0
 
 
@@ -245,3 +253,65 @@ def test_bng_to_cell_batch_rejects_coordinates_beyond_the_bit_budget():
     """No area-of-use guard on the BNG path, but the q/r range check still catches absurd input."""
     with pytest.raises(ValueError, match="representable range"):
         bng_to_cell_batch(np.array([1e15]), np.array([1e15]), side_length=1)
+
+
+def test_side_to_side_batch_paths_match_scalar():
+    rng = np.random.default_rng(4)
+    q = rng.integers(-1000, 1000, size=300)
+    r = rng.integers(-1000, 1000, size=300)
+    x = rng.uniform(100_000, 600_000, size=300)
+    y = rng.uniform(50_000, 900_000, size=300)
+    for orientation in Orientation:
+        ids = encode_batch(q, r, orientation=orientation, side_to_side=433)
+        assert list(ids.astype(object)) == [
+            encode(int(qi), int(ri), orientation=orientation, side_to_side=433) for qi, ri in zip(q, r, strict=True)
+        ]
+
+        dq, dr, ds, dm, do = decode_batch(ids)
+        assert (ds == 433).all() and (dm == SizeMeasure.SIDE_TO_SIDE).all()
+
+        xc, yc = cell_centre_batch(ids)
+        assert [(float(a), float(b)) for a, b in zip(xc, yc, strict=True)] == [centroid(int(i)).coords[0] for i in ids]
+
+        bng_ids = bng_to_cell_batch(x, y, orientation=orientation, side_to_side=433)
+        assert list(bng_ids.astype(object)) == [
+            bng_to_cell(float(xi), float(yi), orientation=orientation, side_to_side=433)
+            for xi, yi in zip(x, y, strict=True)
+        ]
+
+        lats, lons = np.array([51.5074, 55.9533]), np.array([-0.1278, -3.1883])
+        ll_ids = latlon_to_cell_batch(lats, lons, orientation=orientation, side_to_side=433)
+        assert list(ll_ids.astype(object)) == [
+            latlon_to_cell(float(a), float(b), orientation=orientation, side_to_side=433)
+            for a, b in zip(lats, lons, strict=True)
+        ]
+
+
+def test_side_to_side_is_a_different_grid_from_side_length():
+    """Same number, different measure: a coarser grid (sqrt(3)x smaller side), so different ids --
+    not the side_length ids with a flag bit set."""
+    x, y = np.array([530034.0]), np.array([180381.0])
+    by_side = decode(int(bng_to_cell_batch(x, y, side_length=200)[0]))
+    by_width = decode(int(bng_to_cell_batch(x, y, side_to_side=200)[0]))
+    assert (by_side.q, by_side.r) != (by_width.q, by_width.r)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: encode_batch(np.array([0]), np.array([0]), side_length=100, side_to_side=100),
+        lambda: encode_batch(np.array([0]), np.array([0])),
+        lambda: bng_to_cell_batch([1.0], [1.0], side_length=100, side_to_side=100),
+        lambda: bng_to_cell_batch([1.0], [1.0]),
+        lambda: latlon_to_cell_batch([51.5], [-0.1], side_length=100, side_to_side=100),
+        lambda: latlon_to_cell_batch([51.5], [-0.1]),
+    ],
+)
+def test_batch_paths_require_exactly_one_size(call):
+    with pytest.raises(TypeError):
+        call()
+
+
+def test_cell_centre_batch_rejects_mixed_measure():
+    with pytest.raises(ValueError, match="single size measure"):
+        cell_centre_batch([encode(0, 0, side_length=100), encode(0, 0, side_to_side=100)])

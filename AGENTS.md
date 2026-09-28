@@ -17,8 +17,9 @@ The library is small enough to read in full; do that before extending it. Key mo
 | File | Role |
 | ---- | ---- |
 | [orientation.py](src/beahiv/orientation.py) | `Orientation` enum (POINTY/FLAT) — see the "Orientation" gotcha below |
-| [coords.py](src/beahiv/coords.py) | Scalar axial ↔ Cartesian (EPSG:27700 metres) conversion, cube-coordinate rounding |
-| [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex` |
+| [measure.py](src/beahiv/measure.py) | `SizeMeasure` enum (SIDE_LENGTH/SIDE_TO_SIDE) — what a cell's stored size measures |
+| [coords.py](src/beahiv/coords.py) | Scalar axial ↔ Cartesian (EPSG:27700 metres) conversion, cube-coordinate rounding; the grid origin (`ORIGIN_X`/`ORIGIN_Y`) and `side_length_of` |
+| [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex`; `resolve_size`/`encode_size` for the size arguments |
 | [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (array input gives the deduplicated union) |
 | [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
 | [geo.py](src/beahiv/geo.py) | Public geographic interface: `latlon_to_cell`, `bng_to_cell` (WGS84 ↔ EPSG:27700 ↔ cell id), plus `_cell_centre`, the scalar centre lookup behind `geometry.centroid` |
@@ -114,6 +115,21 @@ field) should get a directly corresponding test rather than being covered incide
   *different physical point* under each orientation, and the two only agree at `(0, 0)`. Never
   compare, reuse, or mix `q`/`r` (or cell ids) across orientations. See the docstrings in
   [coords.py](src/beahiv/coords.py) and [orientation.py](src/beahiv/orientation.py).
+- **Cell size is `side_length=` *or* `side_to_side=`, never both, and the id records which.** Every
+  public size-taking function takes the pair — plus `orientation`, and `predicate` where there is
+  one — as keyword-only arguments (`f(x, y, *, side_length=None, side_to_side=None,
+  orientation=...)`), so no call can pass a bare number whose measure is implicit; don't add a
+  positional form back. It funnels them through `cell_id.resolve_size` → `(size, SizeMeasure)`. From there, keep the two
+  kinds of "size" apart: the stored integer (`CellIndex.size`, `encode_size`) is what encoding and
+  hierarchy arithmetic (`* 2`, `// 2`, parity) use; the geometric side (`CellIndex.side_length`,
+  `coords.side_length_of`, possibly irrational) is the only thing to pass to
+  `axial_to_cartesian`/`cartesian_to_axial` or vertex maths. Code holding a decoded `CellIndex`
+  re-encodes via `encode_size(q, r, idx.size, idx.measure, idx.orientation)` so the measure is carried, not re-decided. Like
+  orientation, SIDE_LENGTH and SIDE_TO_SIDE at the same number are different lattices.
+- **The grid origin is `coords.ORIGIN_X`/`ORIGIN_Y`, and nowhere else.**
+  `axial_to_cartesian`/`cartesian_to_axial` and their batch mirrors add/subtract it, and nothing
+  else should apply an offset of its own — every other module reaches Cartesian space through
+  those four. It isn't stored in ids, so changing it silently re-maps every existing id.
 - **Scalar and batch implementations are intentionally separate code, not one calling the other.**
   `batch.py` re-implements the same formulas from `coords.py`/`cell_id.py` in numpy rather than
   looping over the scalar functions, because single-point lookups meet a sub-microsecond target
@@ -165,7 +181,7 @@ When reviewing a PR or diff, check:
    `geometry.py`) has a matching change in `batch.py`, and vice versa, with a test that compares
    them directly (see `test_batch.py`'s `*_matches_scalar` tests) — not just independent test
    coverage of each.
-4. **Bit budget** — any change to `Q_BITS`/`R_BITS`/`SIDE_LENGTH_BITS`/`RESERVED_BITS` in
+4. **Bit budget** — any change to `Q_BITS`/`R_BITS`/`SIDE_LENGTH_BITS`/`MEASURE_BITS`/`RESERVED_BITS` in
    `cell_id.py` keeps the 64-bit total exact (there's an `assert` for this — don't relax it) and
    re-validates the full-GB-extent-at-1m-resolution test in `test_cell_id.py`. Two invariants
    ride on this layout and each has a test: the reserved bits stay at the most significant end
@@ -245,6 +261,7 @@ src/
   beahiv/
     __init__.py       # public API surface (__all__) -- keep in sync with what's exported
     orientation.py     # Orientation enum (POINTY/FLAT)
+    measure.py         # SizeMeasure enum (SIDE_LENGTH/SIDE_TO_SIDE)
     coords.py          # scalar axial <-> Cartesian conversion
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
     hierarchy.py        # get_parent(s) / get_child(ren) -- 2x/0.5x side_length: same-centroid (singular) or overlapping (plural)
