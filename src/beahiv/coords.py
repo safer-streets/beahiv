@@ -8,16 +8,33 @@ FLAT's basis vectors are POINTY's basis vectors rotated +30 degrees
 about the origin -- not a relabelling of the same grid. So (q, r) is
 only meaningful relative to its own orientation's basis: the same
 (q, r, side_length) centres on a *different* point for each orientation,
-and the two only agree at the shared origin (0, 0). Don't compare or
+and the two only agree at the shared origin, axial (0, 0). Don't compare or
 reuse q/r (or cell ids) across orientations expecting the same physical
 cell.
 """
 
 import math
 
+from .measure import SizeMeasure
 from .orientation import Orientation
 
 SQRT3 = math.sqrt(3.0)
+
+# The EPSG:27700 point that axial (0, 0) centres on, for every side_length and orientation. Every
+# grid shares it, which is what keeps the 2x/0.5x same-centroid relations in `hierarchy.py` exact.
+# It is not stored in cell ids, so changing it silently re-maps every existing id to a different
+# physical cell -- ids are only portable between builds that agree on it. `batch.py` reads these
+# same names rather than keeping copies of its own.
+# Chosen to align with a previous grid implementation
+ORIGIN_X = 875 / SQRT3
+ORIGIN_Y = 700 / 3
+
+
+def side_length_of(size: int, measure: SizeMeasure) -> float:
+    """Return the geometric side length of a cell whose stored size is `size` under `measure`."""
+    if measure == SizeMeasure.SIDE_TO_SIDE:
+        return size / SQRT3
+    return size
 
 
 def axial_to_cartesian(
@@ -26,7 +43,10 @@ def axial_to_cartesian(
     side_length: float,
     orientation: Orientation = Orientation.FLAT,
 ) -> tuple[float, float]:
-    """Return the (x, y) centre of hex (q, r) in the same units as side_length."""
+    """Return the (x, y) centre of hex (q, r) in the same units as side_length.
+
+    `side_length` is the geometric one -- see `side_length_of` for a SIDE_TO_SIDE cell.
+    """
     s = side_length
     if orientation == Orientation.POINTY:
         x = s * SQRT3 * (q + r / 2.0)
@@ -34,7 +54,7 @@ def axial_to_cartesian(
     else:
         x = 1.5 * s * q
         y = s * SQRT3 * (r + q / 2.0)
-    return x, y
+    return ORIGIN_X + x, ORIGIN_Y + y
 
 
 def cartesian_to_axial(
@@ -45,6 +65,8 @@ def cartesian_to_axial(
 ) -> tuple[int, int]:
     """Return the integer (q, r) of the hex containing point (x, y)."""
     s = side_length
+    x -= ORIGIN_X
+    y -= ORIGIN_Y
     if orientation == Orientation.POINTY:
         qf = (SQRT3 / 3.0 * x - y / 3.0) / s
         rf = (2.0 / 3.0 * y) / s

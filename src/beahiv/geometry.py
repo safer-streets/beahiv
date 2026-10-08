@@ -39,9 +39,9 @@ def cell_polygons(cell_ids: ArrayLike) -> list[Polygon]:
     Takes anything `batch.cell_centre_batch` does -- a list, a numpy array, a pandas Series --
     since that's what the centre lookup here forwards to.
 
-    Every cell must share the same side_length and orientation -- the same restriction
+    Every cell must share the same size, orientation and measure -- the same restriction
     `batch.cell_centre_batch` already applies to the vectorised centre lookup this reuses,
-    since a single angle set / radius only applies to one orientation and side_length at a time.
+    since a single angle set / radius only applies to one orientation and side length at a time.
     """
     ids = np.asarray(cell_ids)
     if ids.size == 0:
@@ -76,7 +76,7 @@ def centroids(cell_ids: ArrayLike, *, lonlat: bool = False) -> list[Point]:
     """Vectorised version of the above: one `Point` for every cell in `cell_ids`.
 
     Takes anything `batch.cell_centre_batch` does, and applies the same restriction -- every cell
-    must share one side_length and orientation. Returns `Point`s for symmetry with `cell_polygons`;
+    must share one size, orientation and measure. Returns `Point`s for symmetry with `cell_polygons`;
     callers wanting plain coordinate columns (`gdf["x"], gdf["y"] = ...`) should use
     `batch.cell_centre_batch` / `batch.cell_to_lonlat_batch` directly, which is what this wraps.
     """

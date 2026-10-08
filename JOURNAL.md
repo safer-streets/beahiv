@@ -7,6 +7,111 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Rebase `ho-compat` (side-to-side, keyword-only sizes, origin) onto the lon/lat + skill release
+
+- **Why** — `main` gained PR #13 (WGS84 always `(lon, lat)`, `point_to_cell` WGS84 support,
+  `@deprecated` lat-first wrappers, the agent skill) while this branch was open.
+- **What**
+  - Keyword-only `side_length`/`side_to_side`/`orientation` applied to the new `lonlat_to_cell`,
+    `lonlat_to_cell_batch` and the deprecated `latlon_to_cell`/`latlon_to_cell_batch` wrappers.
+    The wrappers just forward to the `lonlat_*` versions.
+  - `point_to_cell`: size, orientation and `lonlat` are all keyword-only. WGS84 points go through
+    `lonlat_to_cell[_batch]` with the resolved size arguments.
+  - Tests from both sides merged and moved to `lonlat_*` with keyword sizes. The new side-to-side
+    tests use the lon-first API.
+  - [skill/SKILL.md](src/beahiv/skill/SKILL.md) rewritten for keyword-only sizes, `side_to_side`,
+    `SizeMeasure`, the new `CellIndex` fields, the origin move and the new error messages. The
+    sync test required `SizeMeasure` to be mentioned.
+  - README quickstart outputs recomputed. They were stale even on this branch: with the moved
+    origin, Trafalgar Square decodes to `q=706`, not 707. The API table shows keyword-only
+    signatures.
+- **Design decisions** — Version is 0.1.0, not the branch's 2.0.0. `main` had since renumbered to
+  0.0.x ("(de)bump version"), and under 0.x a breaking change bumps the minor version.
+- **Follow-ups** — As before: safer-streets-tooling and the notebook need keyword sizes and
+  `lonlat_to_cell`.
+
+## Size and orientation arguments are keyword-only
+
+- **Why** — with two measures, a bare `bng_to_cell(x, y, 350)` hides which one 350 is. The user
+  asked for `f(x, y, *, side_length=None, side_to_side=None, orientation=FLAT)` everywhere.
+- **What**
+  - Keyword-only size/orientation (and `predicate`) on `encode`, `encode_morton`, `encode_batch`,
+    `latlon_to_cell`(`_batch`), `bng_to_cell`(`_batch`), `point_to_cell`, `polyfill`,
+    `bbox_fill`, `resize_cell` (`new_side_length`/`new_side_to_side`). Internal `encode_size`
+    stays positional — it takes an already-resolved measure, so nothing is implicit.
+  - Every call site in `src/`, `tests/` and README code blocks rewritten to keywords with an
+    `ast`-based script (not regex), plus the two variable-dispatched calls in `test_arrow.py` /
+    `test_geo.py` it couldn't see. New tests that a positional size raises `TypeError`.
+  - README DuckDB section: `bh_polyfill` takes the measure as a string equal to the Python keyword
+    and forwards `**{measure: size}`; closed-over UDFs name their keyword. Verified against real
+    DuckDB (spatial) in safer-streets-tooling's env, including a misspelt measure failing loudly.
+- **Design decisions**
+  - Included the `encode*` family, not just the geographic entry points: same ambiguity.
+  - DuckDB: one UDF with a measure-string argument over one UDF per measure — SQL stays explicit
+    and a bad measure is a Python `TypeError`, not a silent side length.
+- **Follow-ups**
+  - Breaking for every positional caller -- hence a breaking version bump (0.1.0 after the rebase onto main).
+  - safer-streets-tooling and the exploratory notebook still call positionally.
+
+## Side-to-side cell sizing, and a named grid origin (`ho-compat` branch)
+
+- **Why** — two requests: (1) let a cell's size be the distance between two parallel sides rather
+  than only the side length, recorded in the index itself; (2) the grid origin was an implicit
+  `(0, 0)` baked into the conversion formulas — name it in one place, since it may need to change.
+- **What**
+  - New [measure.py](src/beahiv/measure.py): `SizeMeasure` (`SIDE_LENGTH=0`, `SIDE_TO_SIDE=1`),
+    exported from `beahiv`.
+  - [cell_id.py](src/beahiv/cell_id.py): bit 61 becomes the measure bit (`MEASURE_BITS/SHIFT/MASK`),
+    `RESERVED_BITS` 3 → 2. `resolve_size(side_length, side_to_side)` enforces exactly one;
+    `encode_size(q, r, size, measure, orientation)` (size and its measure kept adjacent) is the resolved form internal callers use.
+    `CellIndex` fields are now `(q, r, size, measure, orientation)` -- measure next to the size it
+    qualifies, matching `encode_size`, and required (no default: a cell's measure is never implied)
+    -- with a `side_length` *property* giving the geometric side.
+  - Every size-taking public function gains keyword-only `side_to_side=` (`resize_cell`:
+    `new_side_to_side=`) and `side_length` becomes optional: `encode`, `encode_morton`,
+    `latlon_to_cell`, `bng_to_cell`, `point_to_cell`, `polyfill`, `bbox_fill`, `resize_cell`,
+    and in `batch.py` `encode_batch`, `latlon_to_cell_batch`, `bng_to_cell_batch`.
+  - [coords.py](src/beahiv/coords.py): `ORIGIN_X`/`ORIGIN_Y` (both `0.0`), applied in
+    `axial_to_cartesian`/`cartesian_to_axial` and imported by their batch mirrors; plus
+    `side_length_of(size, measure)`.
+  - `hierarchy.py`/`neighbours.py` carry `idx.measure` through; `distance` and
+    `cell_centre_batch` (so `cell_polygons`/`centroids`) reject mixed measures.
+  - `decode_batch` now returns 5 arrays: `(q, r, size, measure, orientation)`, matching `CellIndex`.
+  - Tests: new [tests/test_coords.py](tests/test_coords.py) (origin + inverse, scalar and batch);
+    side-to-side round trip / bit / geometry (edge-midpoint distance and area measured from
+    outside) / batch-parity / exactly-one-size tests across modules; hierarchy's random cells now
+    draw both measures so every existing hierarchy property covers side-to-side too.
+  - README (quickstart, new "Side length or side-to-side" section, origin in the axial formulas,
+    bit layout, API table) and AGENTS.md (module table, two new Developer Rules, bit-budget list).
+- **Design decisions**
+  - **Keep `side_length`, add `side_to_side` beside it** (the user's call), rather than renaming
+    to a neutral `size`: non-breaking for every existing positional/keyword call, which fits the
+    1.1.0 bump. `side_to_side` is keyword-only so it can't be confused positionally.
+  - **Measure 0 = side length**, so every id minted before this decodes bit-for-bit unchanged, and
+    the reserved bits still sit at the top (ids now < 2**62, still signed-int64 safe).
+  - **`CellIndex.side_length` became a geometric property rather than the stored field.** Every
+    geometry call site (`cell_polygon`, `_cell_centre`, the hierarchy tests' centroid checks) then
+    needed no change and is right for both measures, and downstream reads (`idx.side_length ==
+    200` in safer-streets-tooling) still hold for side-length cells. Cost: `CellIndex` construction
+    changes shape (new required `measure` in 4th position); nothing downstream constructs one.
+  - **Same `SIDE_LENGTH_MAX` cap on either measure**, applied to the stored size. The constants
+    kept their `SIDE_LENGTH_*` names (renaming them would churn tests and the reviewer checklist
+    for no behavioural gain); a comment says they now mean "size".
+  - **The origin is a code constant, not an id field** — there are only two free bits and an
+    origin needs far more; ids are simply only comparable between builds agreeing on it (stated in
+    the constant's comment, README and AGENTS.md). Hierarchy relations stay exact under any origin
+    because all grids share it. Mutation-checked: with the origin moved to (1000, 2000) the whole
+    suite still passes, i.e. nothing bypasses the four conversion functions.
+  - Size errors are `TypeError` (a missing/conflicting argument, as Python itself would raise);
+    range errors stay `ValueError`, their messages now saying "size" not "side_length".
+- **Follow-ups**
+  - `decode_batch`'s 4 → 5-tuple return is a (minor, non-exported) break for anyone unpacking it.
+  - The untracked R port (`R/cell_id.R`) still has the old 3-reserved-bit layout: it will reject
+    side-to-side ids as "reserved bits set" until it gains the measure bit.
+  - The origin has since been set to `(875/sqrt(3), 700/3)` (~(505.2, 233.3)), so every id is
+    re-mapped relative to 1.x -- 1.x ids must not be mixed with 2.0 ones. `test_cell_id`'s
+    full-GB-extent test should be re-read against the new origin's q/r headroom.
+
 ## Agent skill (`skill/SKILL.md`) and `beahiv-skill install|remove`
 
 - **Why** — Agents working in downstream projects (safer-streets-core, -tooling, notebooks) kept

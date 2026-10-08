@@ -25,10 +25,10 @@ _BNG = ([530034.0, 429600.0], [180381.0, 434000.0])
 )
 def test_arrow_in_arrow_out(fn, a, b):
     """An Arrow array in gives an Arrow array back, with the same ids the numpy path produces."""
-    result = fn(pa.array(a), pa.array(b), SIDE, Orientation.FLAT)
+    result = fn(pa.array(a), pa.array(b), side_length=SIDE, orientation=Orientation.FLAT)
 
     assert isinstance(result, pa.Array)
-    assert result.to_pylist() == fn(np.array(a), np.array(b), SIDE, Orientation.FLAT).tolist()
+    assert result.to_pylist() == fn(np.array(a), np.array(b), side_length=SIDE, orientation=Orientation.FLAT).tolist()
 
 
 @pytest.mark.parametrize(
@@ -40,10 +40,12 @@ def test_chunked_array_in_arrow_out(fn, a, b):
     chunked_a = pa.chunked_array([[a[0]], [a[1]]])
     chunked_b = pa.chunked_array([[b[0]], [b[1]]])
 
-    result = fn(chunked_a, chunked_b, SIDE, Orientation.FLAT)
+    result = fn(chunked_a, chunked_b, side_length=SIDE, orientation=Orientation.FLAT)
 
     assert isinstance(result, pa.Array)
-    assert result.to_pylist() == fn(pa.array(a), pa.array(b), SIDE, Orientation.FLAT).to_pylist()
+    assert (
+        result.to_pylist() == fn(pa.array(a), pa.array(b), side_length=SIDE, orientation=Orientation.FLAT).to_pylist()
+    )
 
 
 @pytest.mark.parametrize(
@@ -52,9 +54,9 @@ def test_chunked_array_in_arrow_out(fn, a, b):
 )
 def test_arrow_nulls_become_invalid_cell_id(fn, a, b):
     """A null coordinate arrives as NaN and maps to INVALID_CELL_ID, leaving its neighbours alone."""
-    result = fn(pa.array([a[0], None]), pa.array([b[0], None]), SIDE, Orientation.FLAT)
+    result = fn(pa.array([a[0], None]), pa.array([b[0], None]), side_length=SIDE, orientation=Orientation.FLAT)
 
-    assert result.to_pylist() == [fn(a[0], b[0], SIDE, Orientation.FLAT), INVALID_CELL_ID]
+    assert result.to_pylist() == [fn(a[0], b[0], side_length=SIDE, orientation=Orientation.FLAT), INVALID_CELL_ID]
 
 
 @pytest.mark.parametrize(
@@ -63,9 +65,9 @@ def test_arrow_nulls_become_invalid_cell_id(fn, a, b):
 )
 def test_numpy_and_scalar_returns_are_unchanged(fn, a, b):
     """Only Arrow input gets Arrow back: the numpy and scalar paths keep their existing types."""
-    assert isinstance(fn(np.array(a), np.array(b), SIDE, Orientation.FLAT), np.ndarray)
-    assert isinstance(fn(list(a), list(b), SIDE, Orientation.FLAT), np.ndarray)
-    assert isinstance(fn(a[0], b[0], SIDE, Orientation.FLAT), int)
+    assert isinstance(fn(np.array(a), np.array(b), side_length=SIDE, orientation=Orientation.FLAT), np.ndarray)
+    assert isinstance(fn(list(a), list(b), side_length=SIDE, orientation=Orientation.FLAT), np.ndarray)
+    assert isinstance(fn(a[0], b[0], side_length=SIDE, orientation=Orientation.FLAT), int)
 
 
 @pytest.mark.parametrize(
@@ -78,7 +80,7 @@ def test_arrow_return_dtype_is_int64(fn, a, b):
     The reserved bits sit above the orientation bit, so no id reaches bit 63 and
     a signed int64/BIGINT column holds every one as-is.
     """
-    result = fn(pa.array(a), pa.array(b), SIDE, Orientation.FLAT)
+    result = fn(pa.array(a), pa.array(b), side_length=SIDE, orientation=Orientation.FLAT)
 
     assert result.type == pa.int64()
     assert all(cell >> ORIENTATION_SHIFT & 1 for cell in result.to_pylist())  # FLAT sets it

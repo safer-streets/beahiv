@@ -19,7 +19,7 @@ from numpy.typing import ArrayLike
 from shapely import Point
 
 from .batch import bng_to_cell_batch, lonlat_to_cell_batch
-from .cell_id import INVALID_CELL_ID
+from .cell_id import INVALID_CELL_ID, resolve_size
 from .geo import bng_to_cell, lonlat_to_cell
 from .orientation import Orientation
 
@@ -59,17 +59,28 @@ def _resolve_lonlat(points: object, lonlat: bool | None) -> bool:
 
 @overload
 def point_to_cell(
-    points: Point | None, side_length: int, orientation: Orientation = ..., *, lonlat: bool | None = ...
+    points: Point | None,
+    *,
+    side_length: int | None = ...,
+    side_to_side: int | None = ...,
+    orientation: Orientation = ...,
+    lonlat: bool | None = ...,
 ) -> int: ...
 @overload
 def point_to_cell(
-    points: ArrayLike, side_length: int, orientation: Orientation = ..., *, lonlat: bool | None = ...
+    points: ArrayLike,
+    *,
+    side_length: int | None = ...,
+    side_to_side: int | None = ...,
+    orientation: Orientation = ...,
+    lonlat: bool | None = ...,
 ) -> np.ndarray: ...
 def point_to_cell(
     points: "ArrayLike | Point | None",
-    side_length: int,
-    orientation: Orientation = Orientation.FLAT,
     *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
+    orientation: Orientation = Orientation.FLAT,
     lonlat: bool | None = None,
 ) -> "int | np.ndarray":
     """Encode shapely point geometry, in EPSG:27700 or WGS84, to cell ids.
@@ -94,8 +105,10 @@ def point_to_cell(
     wrong cells. The lon/lat path does not have this problem: it goes through `lonlat_to_cell`'s
     area-of-use check, which also rejects `Point(lat, lon)` written the wrong way round.
 
+    Give exactly one of `side_length` / `side_to_side`, as for `lonlat_to_cell`.
+
     The array form returns numpy rather than a `Series` so that assigning it back
-    (`gdf["cell_id"] = point_to_cell(gdf, 100)`) is positional and cannot silently misalign against
+    (`gdf["cell_id"] = point_to_cell(gdf, side_length=100)`) is positional and cannot silently misalign against
     a non-default index.
 
     Missing (`None`) and empty points give `INVALID_CELL_ID`, matching the NaN handling in
@@ -105,20 +118,25 @@ def point_to_cell(
     times the encode itself, so a hot scalar loop is better off calling `bng_to_cell(p.x, p.y, ...)`.
     """
     is_lonlat = _resolve_lonlat(points, lonlat)
+    # resolved up front so a bad size raises even when every point is missing
+    resolve_size(side_length, side_to_side)
     if points is None or isinstance(points, Point):
-        return _encode_one(points, side_length, orientation, is_lonlat)
-    return _encode_many(points, side_length, orientation, is_lonlat)
+        return _encode_one(points, side_length, side_to_side, orientation, is_lonlat)
+    return _encode_many(points, side_length, side_to_side, orientation, is_lonlat)
 
 
-def _encode_one(point: Point | None, side_length: int, orientation: Orientation, lonlat: bool) -> int:
+def _encode_one(
+    point: Point | None, side_length: int | None, side_to_side: int | None, orientation: Orientation, lonlat: bool
+) -> int:
     if point is None or point.is_empty:
         return INVALID_CELL_ID
-    if lonlat:
-        return lonlat_to_cell(point.x, point.y, side_length, orientation)
-    return bng_to_cell(point.x, point.y, side_length, orientation)
+    encode = lonlat_to_cell if lonlat else bng_to_cell
+    return encode(point.x, point.y, side_length=side_length, side_to_side=side_to_side, orientation=orientation)
 
 
-def _encode_many(points: ArrayLike, side_length: int, orientation: Orientation, lonlat: bool) -> np.ndarray:
+def _encode_many(
+    points: ArrayLike, side_length: int | None, side_to_side: int | None, orientation: Orientation, lonlat: bool
+) -> np.ndarray:
     geoms = np.asarray(getattr(points, "geometry", points), dtype=object)
 
     type_ids = shapely.get_type_id(geoms)
@@ -140,6 +158,5 @@ def _encode_many(points: ArrayLike, side_length: int, orientation: Orientation, 
         x[present] = shapely.get_x(geoms[present])
         y[present] = shapely.get_y(geoms[present])
 
-    if lonlat:
-        return lonlat_to_cell_batch(x, y, side_length, orientation)
-    return bng_to_cell_batch(x, y, side_length, orientation)
+    encode = lonlat_to_cell_batch if lonlat else bng_to_cell_batch
+    return encode(x, y, side_length=side_length, side_to_side=side_to_side, orientation=orientation)
