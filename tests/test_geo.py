@@ -2,9 +2,10 @@ import random
 
 import numpy as np
 import pytest
+from shapely import Point
 
 import beahiv
-from beahiv import Orientation, bng_to_cell, centroid, centroids, decode, lonlat_to_cell
+from beahiv import Orientation, bng_to_cell, cell_polygon, centroid, centroids, decode, lonlat_to_cell
 
 
 def test_lonlat_round_trip_stays_within_one_cell():
@@ -30,8 +31,8 @@ def test_lonlat_to_cell_is_deterministic():
         lat = rng.uniform(50.0, 58.5)
         lon = rng.uniform(-6.0, 1.5)
         side_length = rng.randint(10, 5000)
-        a = lonlat_to_cell(lon, lat, side_length)
-        b = lonlat_to_cell(lon, lat, side_length)
+        a = lonlat_to_cell(lon, lat, side_length=side_length)
+        b = lonlat_to_cell(lon, lat, side_length=side_length)
         assert a == b
 
 
@@ -77,13 +78,15 @@ def test_bng_to_cell_matches_lonlat_to_cell():
     x, y = to_bng.transform(lon, lat)
     for side_length in (10, 500):
         for orientation in Orientation:
-            assert bng_to_cell(x, y, side_length, orientation) == lonlat_to_cell(lon, lat, side_length, orientation)
+            assert bng_to_cell(x, y, side_length=side_length, orientation=orientation) == lonlat_to_cell(
+                lon, lat, side_length=side_length, orientation=orientation
+            )
 
 
 def test_bng_to_cell_round_trips_through_centroid():
     x, y = 530000.0, 180000.0
     for side_length in (50, 500):
-        cell_id = bng_to_cell(x, y, side_length)
+        cell_id = bng_to_cell(x, y, side_length=side_length)
         cx, cy = centroid(cell_id).coords[0]
         assert abs(cx - x) < side_length
         assert abs(cy - y) < side_length
@@ -94,9 +97,9 @@ def test_lonlat_to_cell_dispatches_transparently_to_array_input():
     lons = [-0.1278, -3.1883, -3.1791]
     side_length = 1000
 
-    array_ids = lonlat_to_cell(np.array(lons), np.array(lats), side_length)
-    list_ids = lonlat_to_cell(lons, lats, side_length)
-    scalar_ids = [lonlat_to_cell(lon, lat, side_length) for lat, lon in zip(lats, lons, strict=True)]
+    array_ids = lonlat_to_cell(np.array(lons), np.array(lats), side_length=side_length)
+    list_ids = lonlat_to_cell(lons, lats, side_length=side_length)
+    scalar_ids = [lonlat_to_cell(lon, lat, side_length=side_length) for lat, lon in zip(lats, lons, strict=True)]
 
     assert list(array_ids) == scalar_ids
     assert list(list_ids) == scalar_ids
@@ -164,8 +167,8 @@ def test_bng_to_cell_dispatches_transparently_to_array_input():
     ys = np.array([180000.0, 600000.0])
     side_length = 500
 
-    array_ids = bng_to_cell(xs, ys, side_length)
-    scalar_ids = [bng_to_cell(float(x), float(y), side_length) for x, y in zip(xs, ys, strict=True)]
+    array_ids = bng_to_cell(xs, ys, side_length=side_length)
+    scalar_ids = [bng_to_cell(float(x), float(y), side_length=side_length) for x, y in zip(xs, ys, strict=True)]
     assert list(array_ids) == scalar_ids
 
 
@@ -176,16 +179,49 @@ def test_lonlat_to_cell_array_input_rejects_out_of_domain_point():
         lonlat_to_cell(lons, lats, side_length=500)
 
 
+def test_side_to_side_point_falls_within_its_cell():
+    """Encoding and geometry agree on a side_to_side grid. (That they size it by the side-to-side
+    distance rather than as a side length is pinned in test_geometry/test_coords -- a consistent
+    mix-up in both would still pass here.)"""
+    rng = random.Random(9)
+    for orientation in Orientation:
+        for _ in range(200):
+            x, y = rng.uniform(100_000, 600_000), rng.uniform(50_000, 900_000)
+            cell_id = bng_to_cell(x, y, orientation=orientation, side_to_side=250)
+            assert decode(cell_id).size == 250
+            assert cell_polygon(cell_id).distance(Point(x, y)) < 1e-6
+
+    cell_id = lonlat_to_cell(-0.1278, 51.5074, side_to_side=250)
+    lon, lat = centroid(cell_id, lonlat=True).coords[0]
+    assert lonlat_to_cell(lon, lat, side_to_side=250) == cell_id
+
+
+@pytest.mark.parametrize("fn", [lonlat_to_cell, bng_to_cell])
+def test_scalar_paths_require_exactly_one_size(fn):
+    with pytest.raises(TypeError, match="not both"):
+        fn(-0.1, 51.5, side_length=100, side_to_side=100)
+    with pytest.raises(TypeError, match="size is required"):
+        fn(-0.1, 51.5)
+
+
+@pytest.mark.parametrize("fn", [lonlat_to_cell, bng_to_cell])
+def test_size_cannot_be_passed_positionally(fn):
+    """The size must say which measure it is, so a bare positional number is refused rather than
+    silently read as a side length."""
+    with pytest.raises(TypeError, match="positional"):
+        fn(-0.1, 51.5, 100)
+
+
 # --- deprecated lat-first spellings ------------------------------------------------------------
 
 
 def test_deprecated_latlon_to_cell_warns_and_takes_lat_first():
     with pytest.deprecated_call(match="lonlat_to_cell"):
-        old = beahiv.latlon_to_cell(51.5074, -0.1278, 500)  # ty: ignore[deprecated] -- the deprecated call is the point
-    assert old == lonlat_to_cell(-0.1278, 51.5074, 500)
+        old = beahiv.latlon_to_cell(51.5074, -0.1278, side_length=500)  # ty: ignore[deprecated] -- the deprecated call is the point
+    assert old == lonlat_to_cell(-0.1278, 51.5074, side_length=500)
     with pytest.deprecated_call():
-        old = beahiv.latlon_to_cell([51.5074, 55.9533], [-0.1278, -3.1883], 500)  # ty: ignore[deprecated] -- the deprecated call is the point
-    assert np.array_equal(old, lonlat_to_cell([-0.1278, -3.1883], [51.5074, 55.9533], 500))
+        old = beahiv.latlon_to_cell([51.5074, 55.9533], [-0.1278, -3.1883], side_length=500)  # ty: ignore[deprecated] -- the deprecated call is the point
+    assert np.array_equal(old, lonlat_to_cell([-0.1278, -3.1883], [51.5074, 55.9533], side_length=500))
 
 
 def test_lonlat_is_keyword_only():

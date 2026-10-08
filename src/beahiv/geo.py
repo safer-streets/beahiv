@@ -24,8 +24,8 @@ from .batch import (
     bng_to_cell_batch,
     lonlat_to_cell_batch,
 )
-from .cell_id import decode, encode
-from .coords import axial_to_cartesian, cartesian_to_axial
+from .cell_id import decode, encode_size, resolve_size
+from .coords import axial_to_cartesian, cartesian_to_axial, side_length_of
 from .orientation import Orientation
 
 if TYPE_CHECKING:  # only for the pyarrow overloads -- never imported at runtime from module scope
@@ -76,27 +76,46 @@ def _match_arrow(cell_ids: np.ndarray, source: object) -> "np.ndarray | pa.Array
 
 
 @overload
-def lonlat_to_cell(lon: float, lat: float, side_length: int, orientation: Orientation = Orientation.FLAT) -> int: ...
+def lonlat_to_cell(
+    lon: float,
+    lat: float,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
+    orientation: Orientation = Orientation.FLAT,
+) -> int: ...
 @overload
 def lonlat_to_cell(
     lon: "pa.Array | pa.ChunkedArray",
     lat: "pa.Array | pa.ChunkedArray",
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> "pa.Array": ...
 @overload
 def lonlat_to_cell(
-    lon: ArrayLike, lat: ArrayLike, side_length: int, orientation: Orientation = Orientation.FLAT
+    lon: ArrayLike,
+    lat: ArrayLike,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
+    orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray: ...
 def lonlat_to_cell(
     lon: ArrayLike,
     lat: ArrayLike,
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> "int | np.ndarray | pa.Array":
     """Encode WGS84 (lon, lat), scalar or array-like, to a cell id (or array of ids).
 
     lon first: x then y, as everywhere else in this package.
+
+    Give exactly one of `side_length` (the length of an edge) or `side_to_side` (the distance
+    between two parallel edges), in whole metres.
 
     A pyarrow array in gives a pyarrow array back (nulls become NaN, and so INVALID_CELL_ID).
 
@@ -107,60 +126,96 @@ def lonlat_to_cell(
     no such check.
     """
     if isinstance(lon, (int, float)) and isinstance(lat, (int, float)):
+        size, measure = resolve_size(side_length, side_to_side)
         _check_in_area_of_use(lon, lat)
         x, y = _TO_BNG.transform(lon, lat)
-        q, r = cartesian_to_axial(x, y, side_length, orientation)
-        return encode(q, r, side_length, orientation)
-    return _match_arrow(lonlat_to_cell_batch(lon, lat, side_length, orientation), lon)
+        q, r = cartesian_to_axial(x, y, side_length_of(size, measure), orientation)
+        return encode_size(q, r, size, measure, orientation)
+    return _match_arrow(
+        lonlat_to_cell_batch(lon, lat, side_length=side_length, side_to_side=side_to_side, orientation=orientation),
+        lon,
+    )
 
 
 @overload
-def latlon_to_cell(lat: float, lon: float, side_length: int, orientation: Orientation = Orientation.FLAT) -> int: ...
+def latlon_to_cell(
+    lat: float,
+    lon: float,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
+    orientation: Orientation = Orientation.FLAT,
+) -> int: ...
 @overload
 def latlon_to_cell(
     lat: "pa.Array | pa.ChunkedArray",
     lon: "pa.Array | pa.ChunkedArray",
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> "pa.Array": ...
 @overload
 def latlon_to_cell(
-    lat: ArrayLike, lon: ArrayLike, side_length: int, orientation: Orientation = Orientation.FLAT
+    lat: ArrayLike,
+    lon: ArrayLike,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
+    orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray: ...
 @deprecated("latlon_to_cell(lat, lon, ...) is deprecated; use lonlat_to_cell(lon, lat, ...) -- note the argument order")
 def latlon_to_cell(
     lat: ArrayLike,
     lon: ArrayLike,
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> "int | np.ndarray | pa.Array":
     """Deprecated: use `lonlat_to_cell(lon, lat, ...)` -- note the swapped argument order."""
-    return lonlat_to_cell(lon, lat, side_length, orientation)
+    return lonlat_to_cell(lon, lat, side_length=side_length, side_to_side=side_to_side, orientation=orientation)
 
 
 @overload
-def bng_to_cell(x: float, y: float, side_length: int, orientation: Orientation = Orientation.FLAT) -> int: ...
+def bng_to_cell(
+    x: float,
+    y: float,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
+    orientation: Orientation = Orientation.FLAT,
+) -> int: ...
 @overload
 def bng_to_cell(
     x: "pa.Array | pa.ChunkedArray",
     y: "pa.Array | pa.ChunkedArray",
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> "pa.Array": ...
 @overload
 def bng_to_cell(
-    x: ArrayLike, y: ArrayLike, side_length: int, orientation: Orientation = Orientation.FLAT
+    x: ArrayLike,
+    y: ArrayLike,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
+    orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray: ...
 def bng_to_cell(
     x: ArrayLike,
     y: ArrayLike,
-    side_length: int,
+    *,
+    side_length: int | None = None,
+    side_to_side: int | None = None,
     orientation: Orientation = Orientation.FLAT,
 ) -> "int | np.ndarray | pa.Array":
     """Encode an EPSG:27700 (x, y) point directly, with no WGS84 round trip.
 
-    Accepts scalar or array-like (x, y), same dispatch as `lonlat_to_cell`: a pyarrow array in
-    gives a pyarrow array back (nulls become NaN, and so INVALID_CELL_ID).
+    Accepts scalar or array-like (x, y) and the size arguments, same as `lonlat_to_cell`: a
+    pyarrow array in gives a pyarrow array back (nulls become NaN, and so INVALID_CELL_ID).
 
     Not bounds-checked, unlike `lonlat_to_cell`: there is no projection here to go wrong. Any
     (x, y) encodes, wherever it is, unless it is far enough out to exceed the q/r bit budget, which
@@ -169,9 +224,12 @@ def bng_to_cell(
     near the grid origin, without raising.
     """
     if isinstance(x, (int, float)) and isinstance(y, (int, float)):
-        q, r = cartesian_to_axial(x, y, side_length, orientation)
-        return encode(q, r, side_length, orientation)
-    return _match_arrow(bng_to_cell_batch(x, y, side_length, orientation), x)
+        size, measure = resolve_size(side_length, side_to_side)
+        q, r = cartesian_to_axial(x, y, side_length_of(size, measure), orientation)
+        return encode_size(q, r, size, measure, orientation)
+    return _match_arrow(
+        bng_to_cell_batch(x, y, side_length=side_length, orientation=orientation, side_to_side=side_to_side), x
+    )
 
 
 def _cell_centre(cell_id: SupportsIndex, lonlat: bool = False) -> tuple[float, float]:

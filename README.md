@@ -122,9 +122,12 @@ from beahiv import Orientation
 cell_id = beahiv.lonlat_to_cell(-0.1278, 51.5074, side_length=500)
 
 beahiv.decode(cell_id)
-# CellIndex(q=707, r=-145, side_length=500, orientation=<Orientation.FLAT: 1>)
+# CellIndex(q=706, r=-145, size=500, measure=<SizeMeasure.SIDE_LENGTH: 0>, orientation=<Orientation.FLAT: 1>)
 
-beahiv.centroid(cell_id)  # POINT (530250 180566.3) in EPSG:27700 metres
+# ...or size cells by the distance between parallel sides instead (see "Side length or side-to-side")
+beahiv.lonlat_to_cell(-0.1278, 51.5074, side_to_side=500)
+
+beahiv.centroid(cell_id)  # POINT (530005.2 180366.6) in EPSG:27700 metres
 beahiv.centroid(cell_id, lonlat=True)  # back to WGS84, as POINT (lon lat)
 beahiv.cell_polygon(cell_id)  # 6 vertices, generated on demand
 beahiv.get_neighbours(cell_id)  # 6 neighbouring cell ids
@@ -191,6 +194,36 @@ Two things this does *not* enforce:
 - **Same-centroid 2x/0.5x lookups are the one exception** -- see
   "Parent/child at 2x/0.5x `side_length`" below.
 
+### Side length or side-to-side
+
+Every function that takes a cell size takes it one of two ways, as mutually
+exclusive **keyword-only** arguments — pass exactly one, or it raises
+`TypeError`. There is deliberately no positional form (`orientation` and
+`predicate` are keyword-only too), so every call says which measure it means:
+
+- `side_length=` — the length of one edge.
+- `side_to_side=` — the distance between two opposite, parallel edges,
+  which is `sqrt(3)` side lengths.
+
+```python
+beahiv.bng_to_cell(530034, 180381, side_length=200)  # 200m sides
+beahiv.bng_to_cell(530034, 180381, side_to_side=200)  # 200m across, side ~115.5m
+```
+
+Either way the stored size is a whole number of metres, capped at
+`SIDE_LENGTH_MAX`, and which one it measures is recorded in the cell id
+itself (the measure bit, below) — so everything downstream of an id
+(`decode`, geometry, neighbours, hierarchy) needs no size arguments at all,
+and a side-to-side cell's relatives are side-to-side cells. `CellIndex`
+carries both halves: `size` is the stored value and `measure` the
+`SizeMeasure` it is in, while `CellIndex.side_length` is the *geometric*
+side length they imply (`size` itself for a side-length cell, so
+`idx.side_length` reads exactly as it did before side-to-side existed).
+The two measures are different lattices even at the same number, like the
+two orientations: never compare q/r across them. `resize_cell` takes
+`new_side_length=` / `new_side_to_side=` the same way, and either may be
+used whatever the source cell's measure.
+
 ### Parent/child at 2x/0.5x `side_length`
 
 `axial_to_cartesian` is linear in `(q, r)`, so a cell at `side_length`
@@ -208,12 +241,12 @@ partner, or nothing -- pure parity arithmetic, no geometry, a cheap way
 to ask whether a cell happens to line up exactly with the 2x/0.5x grid:
 
 ```python
-cell_id = beahiv.encode(4, -6, 100)
+cell_id = beahiv.encode(4, -6, side_length=100)
 parent = beahiv.get_parent(cell_id)  # side_length=200, same centroid
 child = beahiv.get_child(cell_id)  # side_length=50, same centroid
 assert beahiv.get_child(parent) == cell_id
 
-beahiv.get_parent(beahiv.encode(3, -6, 100))  # None -- odd q, no same-centroid parent
+beahiv.get_parent(beahiv.encode(3, -6, side_length=100))  # None -- odd q, no same-centroid parent
 ```
 
 **`get_parents`/`get_children`** return every cell at the target
@@ -222,7 +255,7 @@ exists and always covers the cell, and is what you want when resizing by
 a factor of two:
 
 ```python
-beahiv.get_parents(beahiv.encode(3, -6, 100))  # the 2 straddled 200m cells
+beahiv.get_parents(beahiv.encode(3, -6, side_length=100))  # the 2 straddled 200m cells
 beahiv.get_parents(cell_id)  # 1 -- an even-q/r cell lies wholly inside its same-centroid parent
 beahiv.get_children(cell_id)  # 7 x 50m: the same-centroid child, plus its k_ring of 1
 ```
@@ -263,12 +296,20 @@ a `side_length` (metres) and an `orientation`:
   edges are horizontal.
 
 ```python
-x = side_length * sqrt(3) * (q + r / 2)  # POINTY
-y = 1.5 * side_length * r
+x = x0 + side_length * sqrt(3) * (q + r / 2)  # POINTY
+y = y0 + 1.5 * side_length * r
 
-x = 1.5 * side_length * q  # FLAT
-y = side_length * sqrt(3) * (r + q / 2)
+x = x0 + 1.5 * side_length * q  # FLAT
+y = y0 + side_length * sqrt(3) * (r + q / 2)
 ```
+
+`side_length` here is the geometric one (`side_to_side / sqrt(3)` for a
+side-to-side cell). `(x0, y0)` is the grid origin — the EPSG:27700 point
+axial `(0, 0)` centres on, shared by every size, orientation and measure.
+It is `ORIGIN_X`/`ORIGIN_Y` in `coords.py`, the single place it is defined
+for both the scalar and batch paths. It is *not* stored in
+cell ids, so changing it re-maps every existing id to a different place:
+ids are only comparable between builds that agree on it.
 
 Cartesian → axial is the inverse of these formulas followed by standard
 cube-coordinate rounding — this is what guarantees an exact, deterministic
@@ -279,15 +320,18 @@ cell for every point, with no ambiguity at cell boundaries.
 Every cell is a single 64-bit integer, reversible with no lookup table:
 
 ```text
-bits 63-61  reserved      3 bits   always zero
+bits 63-62  reserved      2 bits   always zero
+bit 61      measure       1 bit    0 = side length, 1 = side-to-side
 bit 60      orientation   1 bit    0 = POINTY, 1 = FLAT
-bits 59-43  side_length  17 bits   whole metres, 1..100,000
+bits 59-43  size         17 bits   whole metres, 1..100,000
 bits 42-22  q (offset)   21 bits   q + Q_OFFSET
 bits 21-0   r (offset)   22 bits   r + R_OFFSET
 ```
 
-The three reserved bits sit at the most significant end, which means every
-cell id is below `2**61` and so fits a **signed** 64-bit integer. Every
+The measure bit was carved from what used to be three reserved bits, with
+0 meaning side length, so every id minted before it existed decodes
+unchanged. The two remaining reserved bits sit at the most significant end,
+which means every cell id is below `2**62` and so fits a **signed** 64-bit integer. Every
 array of ids beahiv returns (numpy or Arrow) is `int64`, never `uint64`, so
 consumers can store ids in a plain `BIGINT` column rather than needing an
 unsigned type or a hex string. No `encode` path sets the reserved bits, and
@@ -295,7 +339,7 @@ unsigned type or a hex string. No `encode` path sets the reserved bits, and
 strictness is what keeps the bits free to be given a meaning later, since a
 decoder that quietly masked unknown bits off could never start honouring one.
 
-`side_length` is stored directly as a literal metre value rather than an
+The size is stored directly as a literal metre value rather than an
 index into a resolution table, so any grid spacing that fits the bit
 budget is usable without registering it anywhere first. q/r are stored
 offset-biased (shifted into an unsigned range) so both fields decode with
@@ -428,7 +472,7 @@ query engine (DuckDB, Polars), where a per-row Python call would dominate:
 ```python
 con.create_function(
     "beahiv_cell",
-    lambda x, y: beahiv.bng_to_cell(x, y, 202),
+    lambda x, y: beahiv.bng_to_cell(x, y, side_length=202),
     [DOUBLE, DOUBLE],
     BIGINT,
     type="arrow",
@@ -472,8 +516,8 @@ points:
 
 | | |
 | --- | --- |
-| `point_to_cell(gdf, 202)` | 50 ms |
-| `bng_to_cell(gdf.geometry.x, gdf.geometry.y, 202)` | 89 ms |
+| `point_to_cell(gdf, side_length=202)` | 50 ms |
+| `bng_to_cell(gdf.geometry.x, gdf.geometry.y, side_length=202)` | 89 ms |
 
 Missing (`None`) and empty points encode to `INVALID_CELL_ID`, as NaN
 coordinates do elsewhere. A non-point geometry raises rather than
@@ -580,10 +624,10 @@ con.execute("INSTALL spatial;LOAD spatial;")
 
 con.create_function(
     "bh_polyfill",
-    lambda wkb, side_length, orientation, predicate: bh.polyfill(
-        shapely.from_wkb(wkb), side_length, bh.Orientation(orientation), predicate
+    lambda wkb, measure, size, orientation, predicate: bh.polyfill(
+        shapely.from_wkb(wkb), **{measure: size}, orientation=bh.Orientation(orientation), predicate=predicate
     ),
-    [GEOMETRY, BIGINT, BIGINT, VARCHAR],
+    [GEOMETRY, VARCHAR, BIGINT, BIGINT, VARCHAR],
     duckdb.list_type(BIGINT),
 )
 con.create_function(
@@ -595,7 +639,7 @@ con.create_function(
 )
 con.create_function(
     "bh_point_to_cell",
-    lambda x, y: bh.bng_to_cell(x, y, side_length, bh.Orientation.POINTY),
+    lambda x, y: bh.bng_to_cell(x, y, side_to_side=side_to_side, orientation=bh.Orientation.POINTY),
     [DOUBLE, DOUBLE],
     BIGINT,
     type="arrow",
@@ -606,14 +650,24 @@ con.create_function(
 `cell_polygon`) — about 2x faster than the per-row form on a 15k-cell
 polyfill, and the reason to spend the `type="arrow"` declaration. It
 inherits `cell_polygons`' restriction that every id in a call shares one
-`side_length` and `orientation`, which holds for the output of a single
+size, `orientation` and measure, which holds for the output of a single
 `polyfill` but would raise on a column mixing grids; use the per-row
 `cell_polygon` if a query can do that.
 
 `bh_polyfill` stays per-row: it consumes one boundary polygon per call and
 returns a list, so there is nothing to vectorise. `bh_point_to_cell` binds
-`side_length`/`orientation` rather than declaring them as parameters, for the
+the size/`orientation` rather than declaring them as parameters, for the
 `ChunkedArray` reason given above.
+
+SQL has no keyword arguments, but beahiv's sizes are keyword-only so that
+every call says which measure it means — so the UDF is where the keyword
+gets written. `bh_polyfill` takes the measure as a string that *is* the
+Python keyword (`'side_length'` or `'side_to_side'`) and forwards it as
+`**{measure: size}`: one UDF covers both measures, the SQL call site stays
+explicit (`bh_polyfill(geom, 'side_to_side', 350, ...)`), and a misspelt
+measure fails with `TypeError: unexpected keyword argument` rather than
+being read as a side length. The closed-over `bh_point_to_cell` just names
+its keyword. `bh_cell_polygon` needs nothing: the measure travels in the id.
 
 And to use duckdb for spatial computations and query the results into a geopandas `GeoDataFrame`, adapt the pattern in
 the example below, which generates BEAHIV cells within a boundary polygon:
@@ -625,13 +679,13 @@ beahiv_cells = gpd.GeoDataFrame.from_arrow(
     con.sql(
         """
         WITH c AS (
-            SELECT unnest(bh_polyfill(geom, ?, ?, 'centre')) AS spatial_id
+            SELECT unnest(bh_polyfill(geom, 'side_to_side', ?, ?, 'centre')) AS spatial_id
             FROM boundary_table
             WHERE name = ?
         )
         SELECT spatial_id, ST_GeomFromWKB(bh_cell_polygon(spatial_id)) AS geometry FROM c
         """,
-        params=(side_length, bh.Orientation.POINTY, boundary_name),
+        params=(side_to_side, bh.Orientation.POINTY, boundary_name),
     ).arrow()
 ).set_crs("epsg:27700")
 ```
@@ -669,13 +723,14 @@ Property tests cover:
 
 | Function | Description |
 | --- | --- |
-| `encode(q, r, side_length, orientation)` | Build a cell id |
-| `decode(cell_id)` | Recover `CellIndex(q, r, side_length, orientation)`; raises for any id `encode` couldn't have produced |
+| `encode(q, r, *, side_length \| side_to_side, orientation)` | Build a cell id. Every size-taking function below accepts exactly one of `side_length` / `side_to_side` the same way |
+| `decode(cell_id)` | Recover `CellIndex(q, r, size, measure, orientation)`; raises for any id `encode` couldn't have produced |
+| `SizeMeasure` | `SIDE_LENGTH` / `SIDE_TO_SIDE` — what a cell's stored `size` measures |
 | `INVALID_CELL_ID` | The all-zero sentinel emitted for missing input — filter it out before decoding |
-| `lonlat_to_cell(lon, lat, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow). Raises outside EPSG:27700's area of use (lon −9.01–2.01, lat 49.75–61.01) |
-| `latlon_to_cell(lat, lon, side_length, orientation)` | Deprecated lat-first spelling of `lonlat_to_cell` |
-| `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow). No bounds check: any (x, y) within the bit budget encodes |
-| `point_to_cell(points, side_length, orientation, *, lonlat=None)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700, or WGS84 `Point(lon, lat)` via a declared EPSG:4326 or `lonlat=True` |
+| `lonlat_to_cell(lon, lat, *, side_length \| side_to_side, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow). Raises outside EPSG:27700's area of use (lon −9.01–2.01, lat 49.75–61.01) |
+| `latlon_to_cell(lat, lon, *, side_length \| side_to_side, orientation)` | Deprecated lat-first spelling of `lonlat_to_cell` |
+| `bng_to_cell(x, y, *, side_length \| side_to_side, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow). No bounds check: any (x, y) within the bit budget encodes |
+| `point_to_cell(points, *, side_length \| side_to_side, orientation, lonlat=None)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700, or WGS84 `Point(lon, lat)` via a declared EPSG:4326 or `lonlat=True` |
 | `centroid(cell_id, *, lonlat=False)` | Cell centre as a Shapely `Point` — EPSG:27700 (default), or WGS84 as `Point(lon, lat)` (`lonlat=True`) |
 | `centroids(cell_ids, *, lonlat=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out |
 | `cell_polygon(cell_id)` | Cell outline as a Shapely `Polygon`, in EPSG:27700 |
@@ -688,7 +743,7 @@ Property tests cover:
 | `get_parents(cell_id)` | Every cell at 2x `side_length` overlapping this one — 1 if it nests exactly, else the 2 it straddles; array input gives the deduplicated union |
 | `get_children(cell_id)` | Every cell at `side_length / 2` overlapping this one — always 7, covering it with 75% overspill; array input gives the deduplicated union |
 | `encode_morton` / `decode_morton` | Z-order variant of `encode`/`decode` |
-| `polyfill(polygon, side_length, orientation, predicate)` | Every cell id covering a Shapely polygon |
-| `bbox_fill(minx, miny, maxx, maxy, side_length, orientation, predicate)` | Every cell id covering an axis-aligned bounding box |
-| `resize_cell(cell_id, new_side_length, orientation, predicate)` | Every `new_side_length` cell id covering `cell_id`'s hexagon -- smaller or larger than its own `side_length` |
+| `polyfill(polygon, *, side_length \| side_to_side, orientation, predicate)` | Every cell id covering a Shapely polygon |
+| `bbox_fill(minx, miny, maxx, maxy, *, side_length \| side_to_side, orientation, predicate)` | Every cell id covering an axis-aligned bounding box |
+| `resize_cell(cell_id, *, new_side_length \| new_side_to_side, orientation, predicate)` | Every `new_side_length` cell id covering `cell_id`'s hexagon -- smaller or larger than its own `side_length` |
 
