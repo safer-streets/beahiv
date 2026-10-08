@@ -207,3 +207,8 @@ def test_container_crs_contradicting_lonlat_flag_raises():
 def test_container_in_an_unsupported_crs_raises():
     with pytest.raises(ValueError, match="EPSG:3857"):
         point_to_cell(_Container(_points(_BNG_POINTS), 3857), 100)
+
+
+def test_lonlat_is_keyword_only():
+    with pytest.raises(TypeError):
+        point_to_cell(Point(-0.1246, 51.5007), 100, Orientation.FLAT, True)  # ty: ignore[no-matching-overload] -- the positional call is the point

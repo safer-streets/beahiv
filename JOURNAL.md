@@ -75,8 +75,10 @@ Write the entry as part of the change, not after the fact.
     the import line isn't flagged.
   - At first `centroid`/`centroids` accepted both `lonlat=` and a deprecated `latlon=` keyword.
     Review (PR #13) found two flags for one 27700/4326 choice confusing, so `latlon=` is removed.
-    Keyword callers get a `TypeError`, which can't be mistaken for a wrong answer; positional
-    `centroid(c, True)` is unchanged.
+    Keyword callers get a `TypeError`, which can't be mistaken for a wrong answer.
+  - `lonlat` is keyword-only on `centroid`, `centroids` and `point_to_cell`. A bare `True` in a
+    call doesn't say which CRS it means. No caller in this repo or the sibling repos passed it
+    positionally.
   - A stale lat-first call to a *new* name can't silently mis-encode. GB's lat (49.75–61.01) and
     lon (−9.01–2.01) ranges don't overlap, so the swap fails the area-of-use check.
 - **Follow-ups**

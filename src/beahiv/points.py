@@ -59,16 +59,17 @@ def _resolve_lonlat(points: object, lonlat: bool | None) -> bool:
 
 @overload
 def point_to_cell(
-    points: Point | None, side_length: int, orientation: Orientation = ..., lonlat: bool | None = ...
+    points: Point | None, side_length: int, orientation: Orientation = ..., *, lonlat: bool | None = ...
 ) -> int: ...
 @overload
 def point_to_cell(
-    points: ArrayLike, side_length: int, orientation: Orientation = ..., lonlat: bool | None = ...
+    points: ArrayLike, side_length: int, orientation: Orientation = ..., *, lonlat: bool | None = ...
 ) -> np.ndarray: ...
 def point_to_cell(
     points: "ArrayLike | Point | None",
     side_length: int,
     orientation: Orientation = Orientation.FLAT,
+    *,
     lonlat: bool | None = None,
 ) -> "int | np.ndarray":
     """Encode shapely point geometry, in EPSG:27700 or WGS84, to cell ids.

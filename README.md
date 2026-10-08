@@ -675,9 +675,9 @@ Property tests cover:
 | `lonlat_to_cell(lon, lat, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow). Raises outside EPSG:27700's area of use (lon −9.01–2.01, lat 49.75–61.01) |
 | `latlon_to_cell(lat, lon, side_length, orientation)` | Deprecated lat-first spelling of `lonlat_to_cell` |
 | `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow). No bounds check: any (x, y) within the bit budget encodes |
-| `point_to_cell(points, side_length, orientation, lonlat=None)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700, or WGS84 `Point(lon, lat)` via a declared EPSG:4326 or `lonlat=True` |
-| `centroid(cell_id, lonlat=False)` | Cell centre as a Shapely `Point` — EPSG:27700 (default), or WGS84 as `Point(lon, lat)` (`lonlat=True`) |
-| `centroids(cell_ids, lonlat=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out |
+| `point_to_cell(points, side_length, orientation, *, lonlat=None)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700, or WGS84 `Point(lon, lat)` via a declared EPSG:4326 or `lonlat=True` |
+| `centroid(cell_id, *, lonlat=False)` | Cell centre as a Shapely `Point` — EPSG:27700 (default), or WGS84 as `Point(lon, lat)` (`lonlat=True`) |
+| `centroids(cell_ids, *, lonlat=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out |
 | `cell_polygon(cell_id)` | Cell outline as a Shapely `Polygon`, in EPSG:27700 |
 | `cell_polygons(cell_ids)` | Vectorised `cell_polygon` — one same-grid cell id list in, one `Polygon` per cell out |
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |

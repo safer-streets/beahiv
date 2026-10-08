@@ -54,7 +54,7 @@ def cell_polygons(cell_ids: ArrayLike) -> list[Polygon]:
     return [Polygon(zip(row_x, row_y, strict=True)) for row_x, row_y in zip(vx.tolist(), vy.tolist(), strict=True)]
 
 
-def centroid(cell_id: SupportsIndex, lonlat: bool = False) -> Point:
+def centroid(cell_id: SupportsIndex, *, lonlat: bool = False) -> Point:
     """Return a cell's centre as a Shapely `Point`, in EPSG:27700 metres.
 
     With `lonlat=True` the Point is in WGS84, x/y ordered as `Point(lon, lat)` -- the
@@ -72,7 +72,7 @@ def centroid(cell_id: SupportsIndex, lonlat: bool = False) -> Point:
     return Point(*_cell_centre(cell_id, lonlat))
 
 
-def centroids(cell_ids: ArrayLike, lonlat: bool = False) -> list[Point]:
+def centroids(cell_ids: ArrayLike, *, lonlat: bool = False) -> list[Point]:
     """Vectorised version of the above: one `Point` for every cell in `cell_ids`.
 
     Takes anything `batch.cell_centre_batch` does, and applies the same restriction -- every cell

@@ -186,3 +186,11 @@ def test_deprecated_latlon_to_cell_warns_and_takes_lat_first():
     with pytest.deprecated_call():
         old = beahiv.latlon_to_cell([51.5074, 55.9533], [-0.1278, -3.1883], 500)  # ty: ignore[deprecated] -- the deprecated call is the point
     assert np.array_equal(old, lonlat_to_cell([-0.1278, -3.1883], [51.5074, 55.9533], 500))
+
+
+def test_lonlat_is_keyword_only():
+    cell_id = lonlat_to_cell(-0.1278, 51.5074, side_length=500)
+    with pytest.raises(TypeError):
+        centroid(cell_id, True)  # ty: ignore[too-many-positional-arguments] -- the positional call is the point
+    with pytest.raises(TypeError):
+        centroids([cell_id], True)  # ty: ignore[too-many-positional-arguments] -- the positional call is the point
