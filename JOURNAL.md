@@ -7,6 +7,111 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Agent skill (`skill/SKILL.md`) and `beahiv-skill install|remove`
+
+- **Why** — Agents working in downstream projects (safer-streets-core, -tooling, notebooks) kept
+  meeting the same pitfalls: axis order, CRS, mixing grids, `INVALID_CELL_ID`. AGENTS.md covers
+  developing beahiv, not using it.
+- **What**
+  - [src/beahiv/skill/SKILL.md](src/beahiv/skill/SKILL.md): a Claude Code skill with frontmatter, the rules
+    that matter, recipes (DataFrame/GeoDataFrame → cells, aggregate to hexes, polyfill with zero
+    fill, neighbours, resizing, centres, DuckDB) and a guide to error messages.
+  - [src/beahiv/skill_cli.py](src/beahiv/skill_cli.py): `beahiv-skill install|remove ROOT` console
+    script (`[project.scripts]`), also runnable as `python -m beahiv.skill_cli`. `ROOT` is an
+    agent config directory (`.claude`, `.agents`, `~/.claude`), and the skill lives in
+    `ROOT/skills/beahiv/`. `install` leaves already-current files alone. `remove` deletes only the
+    shipped files, then the directory if that empties it. For both, a locally edited file aborts
+    the whole command, having changed nothing, unless `--force` is passed.
+  - [tests/test_skill_cli.py](tests/test_skill_cli.py): install, no-op, refuse and force; remove,
+    including leaving foreign files; argument validation; frontmatter; and a sync check that every
+    non-deprecated public callable in `__all__` is mentioned in the skill.
+  - README "Agent skill" section; AGENTS.md module table, layout, a rule, and the reviewer docs
+    item. The pyproject comment still naming `latlon_to_cell` is fixed.
+- **Design decisions**
+  - Shipped inside the package and installed by a console script, not a repo-level script, so
+    the skill always matches the installed library version and works from any downstream
+    project without cloning beahiv.
+  - `ROOT` is required and positional (`beahiv-skill install .claude`) rather than defaulting to
+    `.claude`, so the target agent is always explicit and `.agents` and similar work the same way.
+    The module is `skill_cli.py` because `beahiv/skill.py` would clash with the `skill/` data
+    directory.
+  - Both commands refuse to touch a differing file without `--force`, because it may hold local
+    edits. They check before changing anything, so a refused command never leaves a half-updated
+    skill.
+  - `.gitattributes` pins `src/beahiv/skill/**` to LF. Windows CI checked it out as CRLF, which
+    broke the frontmatter test and would have shipped CRLF in a Windows-built wheel.
+    `test_skill_is_lf_only` guards this.
+  - The recipes use geopandas/pandas, which beahiv doesn't depend on. They are documentation for
+    callers, not code run here, so the no-geopandas rule for `src/`/`tests/` is untouched.
+- **Follow-ups** — The pandas/geopandas recipes aren't executed by any test, because neither is
+  installed here. Only the beahiv calls in them were checked by hand.
+
+## WGS84 is always (lon, lat): `lonlat_to_cell`, `cell_to_lonlat_batch`, `lonlat=`
+
+- **Why** — Axis order was inconsistent: `centroid`/`point_to_cell` used `Point(lon, lat)`, but
+  `latlon_to_cell(lat, lon)`, `latlon_to_cell_batch(lats, lons)` and `cell_to_latlon_batch` (→
+  `(lat, lon)`) put lat first. The package now uses x-then-y throughout.
+- **What**
+  - [src/beahiv/geo.py](src/beahiv/geo.py): `lonlat_to_cell(lon, lat, ...)` (same overloads/dispatch).
+    `latlon_to_cell` is now a `@warnings.deprecated` wrapper. `_check_in_area_of_use` and `_cell_centre`'s flag
+    are lon-first too.
+  - [src/beahiv/batch.py](src/beahiv/batch.py): `lonlat_to_cell_batch(lons, lats)`,
+    `cell_to_lonlat_batch` → `(lon, lat)`. The old names are kept as deprecated wrappers in their
+    old order.
+  - [src/beahiv/geometry.py](src/beahiv/geometry.py): `centroid`/`centroids` take `lonlat=`. The
+    `latlon=` keyword is removed outright, with no alias.
+  - [src/beahiv/points.py](src/beahiv/points.py): the flag is `lonlat=`, with no alias, because it
+    was never released as `latlon`.
+  - `lonlat_to_cell` exported alongside `latlon_to_cell`. Tests moved to the new names, plus a
+    deprecation test per wrapper. README gains an "Axis order" section, and AGENTS.md a rule for it.
+- **Design decisions**
+  - Renamed rather than reordered under the old names, so the name states the order. Kept
+    deprecated wrappers so existing callers get a warning rather than a break.
+  - Deprecation uses `warnings.deprecated` (PEP 702, Python 3.13+) rather than `warnings.warn`, as
+    requested in PR #13 review. It warns at runtime, and `ty` flags callers. Decorating the
+    implementation is enough for an overloaded function: `ty` flags every overload. `ty` treats
+    the warning as a failure, so the deprecation tests and the `__init__` re-export carry
+    `ty: ignore[deprecated]`, and the tests call the deprecated functions through their module so
+    the import line isn't flagged.
+  - At first `centroid`/`centroids` accepted both `lonlat=` and a deprecated `latlon=` keyword.
+    Review (PR #13) found two flags for one 27700/4326 choice confusing, so `latlon=` is removed.
+    Keyword callers get a `TypeError`, which can't be mistaken for a wrong answer.
+  - `lonlat` is keyword-only on `centroid`, `centroids` and `point_to_cell`. A bare `True` in a
+    call doesn't say which CRS it means. No caller in this repo or the sibling repos passed it
+    positionally.
+  - A stale lat-first call to a *new* name can't silently mis-encode. GB's lat (49.75–61.01) and
+    lon (−9.01–2.01) ranges don't overlap, so the swap fails the area-of-use check.
+- **Follow-ups**
+  - Remove `latlon_to_cell`, `latlon_to_cell_batch` and `cell_to_latlon_batch` together in a later
+    release.
+  - `safer-streets-tooling`'s `beahiv_grid.py` docstring still names `latlon_to_cell`.
+
+## `point_to_cell` accepts WGS84 lon/lat
+
+- **Why** — `point_to_cell` only accepted EPSG:27700, and raised on a container declaring EPSG:4326,
+  even though a geopandas container's CRS says exactly how to read its points and WGS84 is the
+  common case. This reverses the AGENTS.md rule that `points.py` only validates and never reprojects.
+- **What**
+  - [src/beahiv/points.py](src/beahiv/points.py): new `lonlat: bool | None = None` parameter.
+    `_check_crs` is replaced by `_resolve_lonlat`. A declared EPSG:27700 is read as BNG, a declared
+    EPSG:4326 as `Point(lon, lat)`, any other declared CRS raises, and so does a `lonlat` that
+    contradicts the declared CRS. Geometry with no CRS follows the flag and defaults to BNG.
+    WGS84 points go to `lonlat_to_cell`/`lonlat_to_cell_batch`. The stale "only two modules may
+    import shapely" line in the module docstring is gone.
+  - [tests/test_points.py](tests/test_points.py): WGS84 tests, including a round trip through
+    `centroid(lonlat=True)` and the swapped-axis rejection. A `_Container` stand-in (no geopandas)
+    tests the CRS-dispatch branches, which were previously untested.
+  - README "Shapely and geopandas" section, API table row, and AGENTS.md updated.
+- **Design decisions**
+  - Projection is delegated to `geo`/`batch`, so `pyproj` is still imported only there. WGS84 input
+    also inherits the area-of-use guard, which catches `Point(lat, lon)` written the wrong way round.
+  - `lonlat` is named to match `centroid(lonlat=True)`, and `Point(lon, lat)` is the order that
+    returns, so the two round-trip. (Briefly `latlon`, before the axis-order entry above renamed it.)
+  - `None` as the default lets the declared CRS decide. An explicit value acts as an assertion,
+    and contradicting the CRS raises rather than one silently winning.
+- **Follow-ups** — Other CRSs (e.g. EPSG:3857, or OGC:CRS84, whose `to_epsg()` is `None`) still raise.
+  Supporting them would need a general transformer in `geo`/`batch`.
+
 ## Array `get_parents`/`get_children` return the deduplicated union; `get_parent`/`get_child` scalar-only
 
 - **Why** — Array input used to return a same-shape object array holding one tuple per id.

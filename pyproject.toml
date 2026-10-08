@@ -4,16 +4,20 @@ build-backend = "hatchling.build"
 
 [project]
 name = "beahiv"
-version = "0.0.2"
+version = "0.0.3"
 description = "BEAHIV: a fast, equal-area hexagonal grid index, with variable size and orientation for EPSG:27700"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.5",
     "pyproj>=3.6",
     "shapely>=2.0",
 ]
 
-# `latlon_to_cell` / `bng_to_cell` return a pyarrow array when handed one, via a lazy import that is
+# Installs the agent skill bundled at src/beahiv/skill/ -- see beahiv/skill_cli.py.
+[project.scripts]
+beahiv-skill = "beahiv.skill_cli:main"
+
+# `lonlat_to_cell` / `bng_to_cell` return a pyarrow array when handed one, via a lazy import that is
 # only reachable if the caller already has pyarrow (see geo._match_arrow) -- so this extra pins a
 # version and advertises the capability rather than being required for it to work.
 [project.optional-dependencies]

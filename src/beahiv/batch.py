@@ -6,6 +6,8 @@ out in the spec -- encoding a whole crime dataset at once -- where a
 Python-level loop dominates and numpy vectorisation matters.
 """
 
+from warnings import deprecated
+
 import numpy as np
 from numpy.typing import ArrayLike
 from pyproj import Transformer
@@ -39,15 +41,15 @@ _LAT_MIN, _LAT_MAX = 49.75, 61.01
 _LON_MIN, _LON_MAX = -9.01, 2.01
 
 
-def _check_in_area_of_use_batch(lats: np.ndarray, lons: np.ndarray, valid: np.ndarray) -> None:
-    """Raise if any non-NaN (lat, lon) falls outside EPSG:27700's area of use."""
-    in_bounds = (lats >= _LAT_MIN) & (lats <= _LAT_MAX) & (lons >= _LON_MIN) & (lons <= _LON_MAX)
+def _check_in_area_of_use_batch(lons: np.ndarray, lats: np.ndarray, valid: np.ndarray) -> None:
+    """Raise if any non-NaN (lon, lat) falls outside EPSG:27700's area of use."""
+    in_bounds = (lons >= _LON_MIN) & (lons <= _LON_MAX) & (lats >= _LAT_MIN) & (lats <= _LAT_MAX)
     bad = valid & ~in_bounds
     if np.any(bad):
         i = int(np.flatnonzero(bad)[0])
         raise ValueError(
-            f"(lat={lats[i]}, lon={lons[i]}) at index {i} is outside EPSG:27700's "
-            f"area of use (lat in [{_LAT_MIN}, {_LAT_MAX}], lon in [{_LON_MIN}, {_LON_MAX}]) "
+            f"(lon={lons[i]}, lat={lats[i]}) at index {i} is outside EPSG:27700's "
+            f"area of use (lon in [{_LON_MIN}, {_LON_MAX}], lat in [{_LAT_MIN}, {_LAT_MAX}]) "
             "-- check the arguments aren't swapped"
         )
 
@@ -186,24 +188,41 @@ def decode_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarra
     return q_enc - Q_OFFSET, r_enc - R_OFFSET, side_length, orientation
 
 
+def lonlat_to_cell_batch(
+    lons: ArrayLike,
+    lats: ArrayLike,
+    side_length: int,
+    orientation: Orientation = Orientation.FLAT,
+) -> np.ndarray:
+    """Encode each WGS84 (lon, lat) pair; NaN coordinates map to INVALID_CELL_ID.
+
+    Raises if any non-NaN pair is outside EPSG:27700's area of use -- see `geo.lonlat_to_cell`.
+    """
+    lons = np.asarray(lons, dtype=np.float64)
+    lats = np.asarray(lats, dtype=np.float64)
+    valid = ~(np.isnan(lons) | np.isnan(lats))
+    _check_in_area_of_use_batch(lons, lats, valid)
+
+    cell_ids = np.full(lons.shape, INVALID_CELL_ID, dtype=np.int64)
+    if np.any(valid):
+        x, y = _TO_BNG.transform(lons[valid], lats[valid])
+        q, r = cartesian_to_axial_batch(x, y, side_length, orientation)
+        cell_ids[valid] = encode_batch(q, r, side_length, orientation)
+    return cell_ids
+
+
+@deprecated(
+    "latlon_to_cell_batch(lats, lons, ...) is deprecated; use lonlat_to_cell_batch(lons, lats, ...) "
+    "-- note the argument order"
+)
 def latlon_to_cell_batch(
     lats: ArrayLike,
     lons: ArrayLike,
     side_length: int,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
-    """Encode each (lat, lon) pair; NaN coordinates map to INVALID_CELL_ID."""
-    lats = np.asarray(lats, dtype=np.float64)
-    lons = np.asarray(lons, dtype=np.float64)
-    valid = ~(np.isnan(lats) | np.isnan(lons))
-    _check_in_area_of_use_batch(lats, lons, valid)
-
-    cell_ids = np.full(lats.shape, INVALID_CELL_ID, dtype=np.int64)
-    if np.any(valid):
-        x, y = _TO_BNG.transform(lons[valid], lats[valid])
-        q, r = cartesian_to_axial_batch(x, y, side_length, orientation)
-        cell_ids[valid] = encode_batch(q, r, side_length, orientation)
-    return cell_ids
+    """Deprecated: use `lonlat_to_cell_batch(lons, lats, ...)` -- note the swapped argument order."""
+    return lonlat_to_cell_batch(lons, lats, side_length, orientation)
 
 
 def bng_to_cell_batch(
@@ -247,7 +266,14 @@ def cell_centre_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     return axial_to_cartesian_batch(q, r, int(lengths[0]), Orientation(int(orientations[0])))
 
 
-def cell_to_latlon_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+def cell_to_lonlat_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+    """Return WGS84 (lon, lat) centres for a batch of cell ids -- lon first, as `_TO_WGS84` emits."""
     x, y = cell_centre_batch(cell_ids)
-    lon, lat = _TO_WGS84.transform(x, y)
+    return _TO_WGS84.transform(x, y)
+
+
+@deprecated("cell_to_latlon_batch is deprecated; use cell_to_lonlat_batch, which returns (lon, lat)")
+def cell_to_latlon_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+    """Deprecated: use `cell_to_lonlat_batch`, which returns (lon, lat) -- the reverse of this."""
+    lon, lat = cell_to_lonlat_batch(cell_ids)
     return lat, lon

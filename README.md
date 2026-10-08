@@ -92,6 +92,26 @@ There is one extra, `beahiv[arrow]`, which pins `pyarrow` for the
 Arrow-in/Arrow-out encoding path (see [pyarrow](#pyarrow) below). It is
 not needed for that path to work.
 
+### Agent skill
+
+beahiv ships an [agent skill](src/beahiv/skill/SKILL.md) that teaches
+a coding agent how to use the library. It covers the rules that are easy to
+get wrong (axis order, CRS, mixing grids, `INVALID_CELL_ID`), with recipes
+and a guide to common errors. Install it from a project that depends on
+beahiv, so it matches the installed version:
+
+```bash
+uv run beahiv-skill install .claude     # -> .claude/skills/beahiv/
+uv run beahiv-skill install ~/.claude   # user-wide
+uv run beahiv-skill remove .agents      # removes .agents/skills/beahiv/
+```
+
+The argument is the agent's config directory, and the skill goes in its
+`skills/beahiv/` subdirectory. Rerunning `install` after an upgrade updates
+the skill. `remove` deletes only the files the skill ships. If one of those
+files has been edited locally, both commands refuse to change anything
+unless you pass `--force`.
+
 ## Quickstart
 
 ```python
@@ -99,13 +119,13 @@ import beahiv
 from beahiv import Orientation
 
 # Trafalgar Square, London, indexed on a 500m flat-top hex grid.
-cell_id = beahiv.latlon_to_cell(51.5074, -0.1278, side_length=500)
+cell_id = beahiv.lonlat_to_cell(-0.1278, 51.5074, side_length=500)
 
 beahiv.decode(cell_id)
 # CellIndex(q=707, r=-145, side_length=500, orientation=<Orientation.FLAT: 1>)
 
 beahiv.centroid(cell_id)  # POINT (530250 180566.3) in EPSG:27700 metres
-beahiv.centroid(cell_id, latlon=True)  # back to WGS84, as POINT (lon lat)
+beahiv.centroid(cell_id, lonlat=True)  # back to WGS84, as POINT (lon lat)
 beahiv.cell_polygon(cell_id)  # 6 vertices, generated on demand
 beahiv.get_neighbours(cell_id)  # 6 neighbouring cell ids
 beahiv.k_ring(cell_id, 2)  # all 19 cells within 2 hops
@@ -115,6 +135,23 @@ beahiv.distance(cell_id, other)  # hex grid distance between two cells
 See also: [examples notebook](https://github.com/safer-streets/exploratory-data-analysis/blob/main/introducing-beahiv.ipynb)
 
 ## Core concepts
+
+### Axis order
+
+WGS84 coordinates are always **(lon, lat)** — x then y — everywhere in
+beahiv: function arguments (`lonlat_to_cell(lon, lat, ...)`), returned
+tuples (`batch.cell_to_lonlat_batch`), and Shapely points (`Point(lon, lat)`).
+This is the shapely/GeoJSON convention and pyproj's `always_xy` order, and
+the same x-then-y order as EPSG:27700's `(x, y)`.
+
+`latlon_to_cell`, `batch.latlon_to_cell_batch` and `batch.cell_to_latlon_batch`
+are the old lat-first spellings. They still work but are marked
+`@deprecated`: they emit a `DeprecationWarning`, and type checkers flag
+them. `centroid`/`centroids` take `lonlat=`; their old `latlon=` keyword
+has been removed and now raises `TypeError`. Swapping the
+order is caught rather than silent: GB's latitude and longitude ranges
+don't overlap, so lat/lon passed the wrong way round fails the
+area-of-use check.
 
 ### Side length
 
@@ -314,20 +351,20 @@ beahiv.centroid(cell_id)  # POINT, EPSG:27700
 beahiv.centroids(cell_ids)  # one Point per cell id, same order
 ```
 
-A `Point` carries no CRS, so with `latlon=True` the result follows the
+A `Point` carries no CRS, so with `lonlat=True` the result follows the
 shapely/GeoJSON axis convention — `Point(lon, lat)`, **x is longitude** —
 and drops straight into a GeoSeries with `crs=4326`. For plain coordinate
-columns, `batch.cell_centre_batch` and `batch.cell_to_latlon_batch` are the
+columns, `batch.cell_centre_batch` and `batch.cell_to_lonlat_batch` are the
 direct route and are what `centroids` wraps.
 
 ## Bulk operations
 
-`latlon_to_cell` and `bng_to_cell` accept arrays transparently —
+`lonlat_to_cell` and `bng_to_cell` accept arrays transparently —
 pass a list, a numpy array, or a pandas Series and get one back
 (`centroid` is scalar-only; its array form is `centroids`):
 
 ```python
-cell_ids = beahiv.latlon_to_cell(lats, lons, side_length=500)  # lats/lons: array-like
+cell_ids = beahiv.lonlat_to_cell(lons, lats, side_length=500)  # lons/lats: array-like
 ```
 
 A plain scalar still takes the pure-Python path with no numpy import and
@@ -336,9 +373,9 @@ implementation in `beahiv.batch`, which also remains available directly
 for callers who want an unambiguous vectorised call:
 
 ```python
-from beahiv.batch import latlon_to_cell_batch, bng_to_cell_batch, cell_to_latlon_batch
+from beahiv.batch import lonlat_to_cell_batch, bng_to_cell_batch, cell_to_lonlat_batch
 
-cell_ids = latlon_to_cell_batch(lats, lons, side_length=500)
+cell_ids = lonlat_to_cell_batch(lons, lats, side_length=500)
 ```
 
 A missing coordinate (`NaN`) is an absent point rather than an error: it
@@ -375,7 +412,7 @@ children = beahiv.get_children(cell_ids)  # likewise
 
 ### pyarrow
 
-`latlon_to_cell` and `bng_to_cell` also take a pyarrow `Array` or
+`lonlat_to_cell` and `bng_to_cell` also take a pyarrow `Array` or
 `ChunkedArray`, and give an `int64` `Array` back — Arrow in, Arrow out.
 Nulls arrive as `NaN` and so encode to `INVALID_CELL_ID`:
 
@@ -442,31 +479,35 @@ Missing (`None`) and empty points encode to `INVALID_CELL_ID`, as NaN
 coordinates do elsewhere. A non-point geometry raises rather than
 encoding to all-invalid.
 
-#### Coordinates must already be EPSG:27700
+#### EPSG:27700 or WGS84
 
-`point_to_cell` reprojects nothing. Coordinates are read as British
-National Grid metres, and it is the caller's job to get them there:
+`point_to_cell` reads coordinates as either British National Grid metres
+or WGS84 `Point(lon, lat)` — the x/y order `centroid(lonlat=True)` returns.
+A `GeoDataFrame` or `GeoSeries` says which through its `.crs`:
 
 ```python
-beahiv.point_to_cell(gdf.to_crs(27700), side_length=202)
+beahiv.point_to_cell(gdf, side_length=202)  # gdf.crs is EPSG:27700 or EPSG:4326
 ```
 
-This is not an oversight but a consequence of what Shapely geometry is: a
-`Point` holds two numbers and nothing else. It has no `.crs`, and while
-GEOS keeps an SRID slot (`shapely.get_srid`) it defaults to `0` and
-geopandas never populates it — so there is no CRS to reproject *from*.
-Inferring one would mean guessing.
+Any other declared CRS raises rather than being silently misread — WGS84
+degrees interpreted as metres, say, put every point within a few metres of
+the grid origin, encoding to a perfectly valid and completely wrong cell.
+Reproject first with `gdf.to_crs(27700)`.
 
-What geopandas *does* carry is a CRS on the container, and that is
-checked: a `GeoDataFrame` or `GeoSeries` whose `.crs` is anything other
-than EPSG:27700 raises rather than being silently misread. The failure it
-prevents is a quiet one — WGS84 degrees interpreted as metres put every
-point within a few metres of the grid origin, encoding to a perfectly
-valid and completely wrong cell. Geometry with no declared CRS (a bare
-object array, an unset `GeoSeries.crs`) is taken at its word.
+Bare Shapely geometry is different: a `Point` holds two numbers and
+nothing else. It has no `.crs`, and while GEOS keeps an SRID slot
+(`shapely.get_srid`) it defaults to `0` and geopandas never populates it —
+so there is nothing to infer a CRS *from*. A `Point`, list or ndarray (or a
+`GeoSeries` with an unset `.crs`) is read as EPSG:27700 unless you pass
+`lonlat=True`:
 
-For WGS84 specifically, `latlon_to_cell` already does the projection and
-validates against EPSG:27700's area of use.
+```python
+beahiv.point_to_cell(Point(-0.1246, 51.5007), side_length=202, lonlat=True)
+```
+
+Passing a `lonlat` that contradicts a declared CRS raises. WGS84 input
+goes through `lonlat_to_cell`, so it gets the same EPSG:27700 area-of-use
+check — which also catches `Point(lat, lon)` written the wrong way round.
 
 geopandas is **not** a runtime dependency — `point_to_cell` duck-types on
 `.geometry` and `.crs`, and only ever calls Shapely, which beahiv already
@@ -631,11 +672,12 @@ Property tests cover:
 | `encode(q, r, side_length, orientation)` | Build a cell id |
 | `decode(cell_id)` | Recover `CellIndex(q, r, side_length, orientation)`; raises for any id `encode` couldn't have produced |
 | `INVALID_CELL_ID` | The all-zero sentinel emitted for missing input — filter it out before decoding |
-| `latlon_to_cell(lat, lon, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow) |
-| `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow) |
-| `point_to_cell(points, side_length, orientation)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700 only |
-| `centroid(cell_id, latlon=False)` | Cell centre as a Shapely `Point` — EPSG:27700 (default), or WGS84 as `Point(lon, lat)` (`latlon=True`) |
-| `centroids(cell_ids, latlon=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out |
+| `lonlat_to_cell(lon, lat, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow). Raises outside EPSG:27700's area of use (lon −9.01–2.01, lat 49.75–61.01) |
+| `latlon_to_cell(lat, lon, side_length, orientation)` | Deprecated lat-first spelling of `lonlat_to_cell` |
+| `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow). No bounds check: any (x, y) within the bit budget encodes |
+| `point_to_cell(points, side_length, orientation, *, lonlat=None)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700, or WGS84 `Point(lon, lat)` via a declared EPSG:4326 or `lonlat=True` |
+| `centroid(cell_id, *, lonlat=False)` | Cell centre as a Shapely `Point` — EPSG:27700 (default), or WGS84 as `Point(lon, lat)` (`lonlat=True`) |
+| `centroids(cell_ids, *, lonlat=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out |
 | `cell_polygon(cell_id)` | Cell outline as a Shapely `Polygon`, in EPSG:27700 |
 | `cell_polygons(cell_ids)` | Vectorised `cell_polygon` — one same-grid cell id list in, one `Polygon` per cell out |
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |
