@@ -144,9 +144,11 @@ tuples (`batch.cell_to_lonlat_batch`), and Shapely points (`Point(lon, lat)`).
 This is the shapely/GeoJSON convention and pyproj's `always_xy` order, and
 the same x-then-y order as EPSG:27700's `(x, y)`.
 
-`latlon_to_cell`, `batch.latlon_to_cell_batch`, `batch.cell_to_latlon_batch`
-and the `latlon=` keyword on `centroid`/`centroids` are the old lat-first
-spellings. They still work but emit a `DeprecationWarning`. Swapping the
+`latlon_to_cell`, `batch.latlon_to_cell_batch` and `batch.cell_to_latlon_batch`
+are the old lat-first spellings. They still work but are marked
+`@deprecated`: they emit a `DeprecationWarning`, and type checkers flag
+them. `centroid`/`centroids` take `lonlat=`; their old `latlon=` keyword
+has been removed and now raises `TypeError`. Swapping the
 order is caught rather than silent: GB's latitude and longitude ranges
 don't overlap, so lat/lon passed the wrong way round fails the
 area-of-use check.

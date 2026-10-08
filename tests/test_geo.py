@@ -3,7 +3,8 @@ import random
 import numpy as np
 import pytest
 
-from beahiv import Orientation, bng_to_cell, centroid, centroids, decode, latlon_to_cell, lonlat_to_cell
+import beahiv
+from beahiv import Orientation, bng_to_cell, centroid, centroids, decode, lonlat_to_cell
 
 
 def test_lonlat_round_trip_stays_within_one_cell():
@@ -180,15 +181,8 @@ def test_lonlat_to_cell_array_input_rejects_out_of_domain_point():
 
 def test_deprecated_latlon_to_cell_warns_and_takes_lat_first():
     with pytest.deprecated_call(match="lonlat_to_cell"):
-        assert latlon_to_cell(51.5074, -0.1278, 500) == lonlat_to_cell(-0.1278, 51.5074, 500)
+        old = beahiv.latlon_to_cell(51.5074, -0.1278, 500)  # ty: ignore[deprecated] -- the deprecated call is the point
+    assert old == lonlat_to_cell(-0.1278, 51.5074, 500)
     with pytest.deprecated_call():
-        old = latlon_to_cell([51.5074, 55.9533], [-0.1278, -3.1883], 500)
+        old = beahiv.latlon_to_cell([51.5074, 55.9533], [-0.1278, -3.1883], 500)  # ty: ignore[deprecated] -- the deprecated call is the point
     assert np.array_equal(old, lonlat_to_cell([-0.1278, -3.1883], [51.5074, 55.9533], 500))
-
-
-def test_deprecated_latlon_keyword_on_centroid_and_centroids():
-    cell_id = lonlat_to_cell(-0.1278, 51.5074, side_length=500)
-    with pytest.deprecated_call(match="lonlat="):
-        assert centroid(cell_id, latlon=True).coords[0] == centroid(cell_id, lonlat=True).coords[0]
-    with pytest.deprecated_call(match="lonlat="):
-        assert centroids([cell_id], latlon=True)[0].coords[0] == centroid(cell_id, lonlat=True).coords[0]

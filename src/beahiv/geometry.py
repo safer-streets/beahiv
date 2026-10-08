@@ -2,7 +2,6 @@
 regenerated from (q, r, side_length, orientation)."""
 
 import math
-import warnings
 from typing import SupportsIndex
 
 import numpy as np
@@ -55,15 +54,7 @@ def cell_polygons(cell_ids: ArrayLike) -> list[Polygon]:
     return [Polygon(zip(row_x, row_y, strict=True)) for row_x, row_y in zip(vx.tolist(), vy.tolist(), strict=True)]
 
 
-def _deprecated_latlon(lonlat: bool, latlon: bool | None, caller: str) -> bool:
-    """Fold the deprecated `latlon=` keyword into `lonlat`; remove along with that keyword."""
-    if latlon is None:
-        return lonlat
-    warnings.warn(f"{caller}(latlon=...) is deprecated; use lonlat=...", DeprecationWarning, stacklevel=3)
-    return latlon
-
-
-def centroid(cell_id: SupportsIndex, lonlat: bool = False, *, latlon: bool | None = None) -> Point:
+def centroid(cell_id: SupportsIndex, lonlat: bool = False) -> Point:
     """Return a cell's centre as a Shapely `Point`, in EPSG:27700 metres.
 
     With `lonlat=True` the Point is in WGS84, x/y ordered as `Point(lon, lat)` -- the
@@ -71,11 +62,8 @@ def centroid(cell_id: SupportsIndex, lonlat: bool = False, *, latlon: bool | Non
     carries no CRS of its own, so that ordering is the only thing telling a consumer which axis
     is which; note it is the *opposite* of the `(lat, lon)` tuple this used to return.
 
-    `latlon=` is the deprecated name for `lonlat=`.
-
     Scalar only -- `centroids` is the vectorised form, mirroring `cell_polygon`/`cell_polygons`.
     """
-    lonlat = _deprecated_latlon(lonlat, latlon, "centroid")
     # not isinstance(cell_id, SupportsIndex): ndarray defines __index__ (and so satisfies that
     # protocol) but only honours it at size 1, which would let some arrays through and fail the
     # rest deep inside numpy. Rank is the actual question, and it covers Series/list/tuple too.
@@ -84,17 +72,14 @@ def centroid(cell_id: SupportsIndex, lonlat: bool = False, *, latlon: bool | Non
     return Point(*_cell_centre(cell_id, lonlat))
 
 
-def centroids(cell_ids: ArrayLike, lonlat: bool = False, *, latlon: bool | None = None) -> list[Point]:
+def centroids(cell_ids: ArrayLike, lonlat: bool = False) -> list[Point]:
     """Vectorised version of the above: one `Point` for every cell in `cell_ids`.
 
     Takes anything `batch.cell_centre_batch` does, and applies the same restriction -- every cell
     must share one side_length and orientation. Returns `Point`s for symmetry with `cell_polygons`;
     callers wanting plain coordinate columns (`gdf["x"], gdf["y"] = ...`) should use
     `batch.cell_centre_batch` / `batch.cell_to_lonlat_batch` directly, which is what this wraps.
-
-    `latlon=` is the deprecated name for `lonlat=`.
     """
-    lonlat = _deprecated_latlon(lonlat, latlon, "centroids")
     ids = np.asarray(cell_ids)
     if ids.ndim == 0:
         # the mirror of centroid's array guard -- and the likelier mistake of the two for anyone

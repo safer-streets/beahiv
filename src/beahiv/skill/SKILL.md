@@ -24,9 +24,10 @@ from beahiv import Orientation
 
 1. **WGS84 is always (lon, lat), x then y.** That applies to arguments (`lonlat_to_cell(lon, lat, ...)`),
    returned tuples (`batch.cell_to_lonlat_batch` gives `(lon, lat)`) and `Point(lon, lat)`. Never
-   pass lat first. `latlon_to_cell`, `batch.latlon_to_cell_batch`, `batch.cell_to_latlon_batch`
-   and the `latlon=` keyword are deprecated lat-first spellings. Don't use them in new code, and
-   switch existing calls to the `lonlat` names, swapping the argument order as you do.
+   pass lat first. `latlon_to_cell`, `batch.latlon_to_cell_batch` and `batch.cell_to_latlon_batch`
+   are deprecated lat-first spellings. Don't use them in new code, and switch existing calls to the
+   `lonlat` names, swapping the argument order as you do. `centroid`/`centroids` take `lonlat=`;
+   the old `latlon=` keyword is gone and raises `TypeError`.
 2. **Everything is EPSG:27700 metres unless you ask for WGS84.** `cell_polygon(s)` always returns
    EPSG:27700. `centroid(s)` does too, unless you pass `lonlat=True`. Set `crs=27700` on any GeoDataFrame you build from them.
 3. **Pick the right entry point for your input:**

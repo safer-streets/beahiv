@@ -6,7 +6,7 @@ out in the spec -- encoding a whole crime dataset at once -- where a
 Python-level loop dominates and numpy vectorisation matters.
 """
 
-import warnings
+from warnings import deprecated
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -211,6 +211,10 @@ def lonlat_to_cell_batch(
     return cell_ids
 
 
+@deprecated(
+    "latlon_to_cell_batch(lats, lons, ...) is deprecated; use lonlat_to_cell_batch(lons, lats, ...) "
+    "-- note the argument order"
+)
 def latlon_to_cell_batch(
     lats: ArrayLike,
     lons: ArrayLike,
@@ -218,12 +222,6 @@ def latlon_to_cell_batch(
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Deprecated: use `lonlat_to_cell_batch(lons, lats, ...)` -- note the swapped argument order."""
-    warnings.warn(
-        "latlon_to_cell_batch(lats, lons, ...) is deprecated; use lonlat_to_cell_batch(lons, lats, ...) "
-        "-- note the argument order",
-        DeprecationWarning,
-        stacklevel=2,
-    )
     return lonlat_to_cell_batch(lons, lats, side_length, orientation)
 
 
@@ -274,12 +272,8 @@ def cell_to_lonlat_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     return _TO_WGS84.transform(x, y)
 
 
+@deprecated("cell_to_latlon_batch is deprecated; use cell_to_lonlat_batch, which returns (lon, lat)")
 def cell_to_latlon_batch(cell_ids: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     """Deprecated: use `cell_to_lonlat_batch`, which returns (lon, lat) -- the reverse of this."""
-    warnings.warn(
-        "cell_to_latlon_batch is deprecated; use cell_to_lonlat_batch, which returns (lon, lat)",
-        DeprecationWarning,
-        stacklevel=2,
-    )
     lon, lat = cell_to_lonlat_batch(cell_ids)
     return lat, lon

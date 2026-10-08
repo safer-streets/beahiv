@@ -53,13 +53,13 @@ Write the entry as part of the change, not after the fact.
   `(lat, lon)`) put lat first. The package now uses x-then-y throughout.
 - **What**
   - [src/beahiv/geo.py](src/beahiv/geo.py): `lonlat_to_cell(lon, lat, ...)` (same overloads/dispatch).
-    `latlon_to_cell` is now a deprecated wrapper. `_check_in_area_of_use` and `_cell_centre`'s flag
+    `latlon_to_cell` is now a `@warnings.deprecated` wrapper. `_check_in_area_of_use` and `_cell_centre`'s flag
     are lon-first too.
   - [src/beahiv/batch.py](src/beahiv/batch.py): `lonlat_to_cell_batch(lons, lats)`,
     `cell_to_lonlat_batch` → `(lon, lat)`. The old names are kept as deprecated wrappers in their
     old order.
-  - [src/beahiv/geometry.py](src/beahiv/geometry.py): `centroid`/`centroids` take `lonlat=`. `latlon=`
-    is still accepted as a deprecated keyword-only alias (`_deprecated_latlon`).
+  - [src/beahiv/geometry.py](src/beahiv/geometry.py): `centroid`/`centroids` take `lonlat=`. The
+    `latlon=` keyword is removed outright, with no alias.
   - [src/beahiv/points.py](src/beahiv/points.py): the flag is `lonlat=`, with no alias, because it
     was never released as `latlon`.
   - `lonlat_to_cell` exported alongside `latlon_to_cell`. Tests moved to the new names, plus a
@@ -67,11 +67,21 @@ Write the entry as part of the change, not after the fact.
 - **Design decisions**
   - Renamed rather than reordered under the old names, so the name states the order. Kept
     deprecated wrappers so existing callers get a warning rather than a break.
+  - Deprecation uses `warnings.deprecated` (PEP 702, Python 3.13+) rather than `warnings.warn`, as
+    requested in PR #13 review. It warns at runtime, and `ty` flags callers. Decorating the
+    implementation is enough for an overloaded function: `ty` flags every overload. `ty` treats
+    the warning as a failure, so the deprecation tests and the `__init__` re-export carry
+    `ty: ignore[deprecated]`, and the tests call the deprecated functions through their module so
+    the import line isn't flagged.
+  - At first `centroid`/`centroids` accepted both `lonlat=` and a deprecated `latlon=` keyword.
+    Review (PR #13) found two flags for one 27700/4326 choice confusing, so `latlon=` is removed.
+    Keyword callers get a `TypeError`, which can't be mistaken for a wrong answer; positional
+    `centroid(c, True)` is unchanged.
   - A stale lat-first call to a *new* name can't silently mis-encode. GB's lat (49.75–61.01) and
     lon (−9.01–2.01) ranges don't overlap, so the swap fails the area-of-use check.
 - **Follow-ups**
-  - Remove `latlon_to_cell`, `latlon_to_cell_batch`, `cell_to_latlon_batch`, `geometry._deprecated_latlon`
-    and the `latlon=` keyword together in a later release.
+  - Remove `latlon_to_cell`, `latlon_to_cell_batch` and `cell_to_latlon_batch` together in a later
+    release.
   - `safer-streets-tooling`'s `beahiv_grid.py` docstring still names `latlon_to_cell`.
 
 ## `point_to_cell` accepts WGS84 lon/lat

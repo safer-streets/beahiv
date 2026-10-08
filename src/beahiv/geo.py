@@ -13,8 +13,8 @@ WGS84 is always (lon, lat) -- x then y -- in arguments and results alike, matchi
 GeoJSON and pyproj's `always_xy`. `latlon_to_cell` is the deprecated lat-first spelling.
 """
 
-import warnings
 from typing import TYPE_CHECKING, SupportsIndex, overload
+from warnings import deprecated
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -127,6 +127,7 @@ def latlon_to_cell(
 def latlon_to_cell(
     lat: ArrayLike, lon: ArrayLike, side_length: int, orientation: Orientation = Orientation.FLAT
 ) -> np.ndarray: ...
+@deprecated("latlon_to_cell(lat, lon, ...) is deprecated; use lonlat_to_cell(lon, lat, ...) -- note the argument order")
 def latlon_to_cell(
     lat: ArrayLike,
     lon: ArrayLike,
@@ -134,11 +135,6 @@ def latlon_to_cell(
     orientation: Orientation = Orientation.FLAT,
 ) -> "int | np.ndarray | pa.Array":
     """Deprecated: use `lonlat_to_cell(lon, lat, ...)` -- note the swapped argument order."""
-    warnings.warn(
-        "latlon_to_cell(lat, lon, ...) is deprecated; use lonlat_to_cell(lon, lat, ...) -- note the argument order",
-        DeprecationWarning,
-        stacklevel=2,
-    )
     return lonlat_to_cell(lon, lat, side_length, orientation)
 
 

@@ -1,14 +1,12 @@
 import numpy as np
 import pytest
 
-from beahiv import Orientation, decode, encode
+from beahiv import Orientation, batch, decode, encode
 from beahiv.batch import (
     bng_to_cell_batch,
-    cell_to_latlon_batch,
     cell_to_lonlat_batch,
     decode_batch,
     encode_batch,
-    latlon_to_cell_batch,
     lonlat_to_cell_batch,
 )
 from beahiv.cell_id import (
@@ -255,14 +253,14 @@ def test_bng_to_cell_batch_rejects_coordinates_beyond_the_bit_budget():
 def test_deprecated_latlon_to_cell_batch_warns_and_takes_lats_first():
     lats, lons = [51.5074, 55.9533], [-0.1278, -3.1883]
     with pytest.deprecated_call(match="lonlat_to_cell_batch"):
-        old = latlon_to_cell_batch(lats, lons, 500)
+        old = batch.latlon_to_cell_batch(lats, lons, 500)  # ty: ignore[deprecated] -- the deprecated call is the point
     assert np.array_equal(old, lonlat_to_cell_batch(lons, lats, 500))
 
 
 def test_deprecated_cell_to_latlon_batch_warns_and_returns_lat_first():
     ids = lonlat_to_cell_batch([-0.1278, -3.1883], [51.5074, 55.9533], 500)
     with pytest.deprecated_call(match="cell_to_lonlat_batch"):
-        lat, lon = cell_to_latlon_batch(ids)
+        lat, lon = batch.cell_to_latlon_batch(ids)  # ty: ignore[deprecated] -- the deprecated call is the point
     new_lon, new_lat = cell_to_lonlat_batch(ids)
     assert np.array_equal(lat, new_lat)
     assert np.array_equal(lon, new_lon)

@@ -108,10 +108,15 @@ field) should get a directly corresponding test rather than being covered incide
 - **WGS84 is always (lon, lat) — x then y — in arguments, returned tuples and `Point`s alike.**
   That is the shapely/GeoJSON order and pyproj's `always_xy`, so nothing is ever swapped
   internally. Any new WGS84-facing function takes/returns lon first and says `lonlat` in its name
-  or flag. `latlon_to_cell`, `latlon_to_cell_batch`, `cell_to_latlon_batch` and the `latlon=`
-  keyword on `centroid`/`centroids` are deprecated lat-first wrappers kept for migration only —
-  don't call them internally (`pytest -W error::DeprecationWarning` passes outside their own
-  deprecation tests), and remove them together when they go.
+  or flag. `latlon_to_cell`, `latlon_to_cell_batch` and `cell_to_latlon_batch` are deprecated
+  lat-first wrappers kept for migration only. They are marked with `warnings.deprecated` (PEP 702),
+  which warns at runtime and makes `ty` flag every use, so don't call them internally. Outside their
+  own deprecation tests, `pytest -W error::DeprecationWarning` passes and `ty` is clean. Those tests
+  and the re-export in `__init__.py` carry a `ty: ignore[deprecated]`. Remove all three together
+  when they go. Deprecate any future function the same way, with the decorator rather than a
+  hand-written `warnings.warn`. Don't keep a deprecated *keyword* alongside its replacement:
+  `centroid` briefly took both `lonlat=` and `latlon=`, and review found two flags for one choice
+  confusing.
 - **Validate lat/lon against EPSG:27700's area of use before projecting.** Outside
   `lat ∈ [49.75, 61.01]`, `lon ∈ [-9.01, 2.01]` (`pyproj.CRS.from_epsg(27700).area_of_use`), PROJ
   *extrapolates* rather than erroring — a swapped or garbage lat/lon can produce an (x, y) millions
