@@ -1,4 +1,4 @@
-"""pyarrow interop for `latlon_to_cell` / `bng_to_cell`.
+"""pyarrow interop for `lonlat_to_cell` / `bng_to_cell`.
 
 Arrow arrays have always worked as *input* (numpy consumes them via the buffer protocol); what is
 tested here is that they now come back as Arrow, and that Arrow nulls behave like NaN rather than
@@ -9,19 +9,19 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from beahiv import Orientation, bng_to_cell, latlon_to_cell
+from beahiv import Orientation, bng_to_cell, lonlat_to_cell
 from beahiv.cell_id import INVALID_CELL_ID, ORIENTATION_SHIFT
 
 SIDE = 202
 
 # a couple of London/Leeds points, in both CRSs
-_LATLON = ([51.5074, 53.8008], [-0.1278, -1.5491])
+_LONLAT = ([-0.1278, -1.5491], [51.5074, 53.8008])
 _BNG = ([530034.0, 429600.0], [180381.0, 434000.0])
 
 
 @pytest.mark.parametrize(
     ("fn", "a", "b"),
-    [(latlon_to_cell, *_LATLON), (bng_to_cell, *_BNG)],
+    [(lonlat_to_cell, *_LONLAT), (bng_to_cell, *_BNG)],
 )
 def test_arrow_in_arrow_out(fn, a, b):
     """An Arrow array in gives an Arrow array back, with the same ids the numpy path produces."""
@@ -33,7 +33,7 @@ def test_arrow_in_arrow_out(fn, a, b):
 
 @pytest.mark.parametrize(
     ("fn", "a", "b"),
-    [(latlon_to_cell, *_LATLON), (bng_to_cell, *_BNG)],
+    [(lonlat_to_cell, *_LONLAT), (bng_to_cell, *_BNG)],
 )
 def test_chunked_array_in_arrow_out(fn, a, b):
     """A ChunkedArray works too, and the chunk boundaries make no difference to the result."""
@@ -48,7 +48,7 @@ def test_chunked_array_in_arrow_out(fn, a, b):
 
 @pytest.mark.parametrize(
     ("fn", "a", "b"),
-    [(latlon_to_cell, *_LATLON), (bng_to_cell, *_BNG)],
+    [(lonlat_to_cell, *_LONLAT), (bng_to_cell, *_BNG)],
 )
 def test_arrow_nulls_become_invalid_cell_id(fn, a, b):
     """A null coordinate arrives as NaN and maps to INVALID_CELL_ID, leaving its neighbours alone."""
@@ -59,7 +59,7 @@ def test_arrow_nulls_become_invalid_cell_id(fn, a, b):
 
 @pytest.mark.parametrize(
     ("fn", "a", "b"),
-    [(latlon_to_cell, *_LATLON), (bng_to_cell, *_BNG)],
+    [(lonlat_to_cell, *_LONLAT), (bng_to_cell, *_BNG)],
 )
 def test_numpy_and_scalar_returns_are_unchanged(fn, a, b):
     """Only Arrow input gets Arrow back: the numpy and scalar paths keep their existing types."""
@@ -70,7 +70,7 @@ def test_numpy_and_scalar_returns_are_unchanged(fn, a, b):
 
 @pytest.mark.parametrize(
     ("fn", "a", "b"),
-    [(latlon_to_cell, *_LATLON), (bng_to_cell, *_BNG)],
+    [(lonlat_to_cell, *_LONLAT), (bng_to_cell, *_BNG)],
 )
 def test_arrow_return_dtype_is_int64(fn, a, b):
     """Arrow gets int64 back, never uint64, and no id is negative.

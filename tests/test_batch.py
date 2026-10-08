@@ -5,9 +5,11 @@ from beahiv import Orientation, decode, encode
 from beahiv.batch import (
     bng_to_cell_batch,
     cell_to_latlon_batch,
+    cell_to_lonlat_batch,
     decode_batch,
     encode_batch,
     latlon_to_cell_batch,
+    lonlat_to_cell_batch,
 )
 from beahiv.cell_id import (
     INVALID_CELL_ID,
@@ -20,7 +22,7 @@ from beahiv.cell_id import (
     SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
 )
-from beahiv.geo import bng_to_cell, latlon_to_cell
+from beahiv.geo import bng_to_cell, lonlat_to_cell
 from beahiv.geometry import centroid
 
 
@@ -49,7 +51,7 @@ def test_batch_encoders_return_signed_int64():
     assert (ids > 0).all()
 
     assert bng_to_cell_batch([530000.0], [180000.0], 100).dtype == np.int64
-    assert latlon_to_cell_batch([51.5074], [-0.1278], 100).dtype == np.int64
+    assert lonlat_to_cell_batch([-0.1278], [51.5074], 100).dtype == np.int64
     assert bng_to_cell(np.array([530000.0]), np.array([180000.0]), 100).dtype == np.int64
 
     # the promotion the signed type avoids: uint64 - int64 would land in float64
@@ -103,11 +105,11 @@ def test_encode_batch_rejects_q_r_the_scalar_path_rejects(q, r):
     [
         lambda: encode_batch(np.array([4, -4]), np.array([-6, 6]), 100),
         lambda: encode_batch(np.array([], dtype=np.int64), np.array([], dtype=np.int64), 100),
-        lambda: latlon_to_cell_batch([51.5074, np.nan], [-0.1278, np.nan], 100),
-        lambda: latlon_to_cell_batch([np.nan], [np.nan], 100),
+        lambda: lonlat_to_cell_batch([-0.1278, np.nan], [51.5074, np.nan], 100),
+        lambda: lonlat_to_cell_batch([np.nan], [np.nan], 100),
         lambda: bng_to_cell_batch([530034.0, np.nan], [180381.0, np.nan], 100),
         lambda: bng_to_cell_batch([], [], 100),
-        lambda: latlon_to_cell([51.5074], [-0.1278], 100),
+        lambda: lonlat_to_cell([-0.1278], [51.5074], 100),
         lambda: bng_to_cell([530034.0], [180381.0], 100),
     ],
 )
@@ -175,46 +177,46 @@ def test_decode_batch_accepts_an_empty_array():
     assert len(dq) == len(dr) == len(ds) == len(do) == 0
 
 
-def test_latlon_to_cell_batch_matches_scalar():
+def test_lonlat_to_cell_batch_matches_scalar():
     lats = np.array([51.5074, 55.9533, 51.4816])
     lons = np.array([-0.1278, -3.1883, -3.1791])
     side_length = 1000
 
-    batch_ids = latlon_to_cell_batch(lats, lons, side_length, Orientation.POINTY)
+    batch_ids = lonlat_to_cell_batch(lons, lats, side_length, Orientation.POINTY)
     scalar_ids = [
-        latlon_to_cell(float(lat), float(lon), side_length, Orientation.POINTY)
+        lonlat_to_cell(float(lon), float(lat), side_length, Orientation.POINTY)
         for lat, lon in zip(lats, lons, strict=True)
     ]
 
     assert list(batch_ids.astype(object)) == scalar_ids
 
 
-def test_cell_to_latlon_batch_matches_scalar():
+def test_cell_to_lonlat_batch_matches_scalar():
     lats = np.array([51.5074, 55.9533, 51.4816])
     lons = np.array([-0.1278, -3.1883, -3.1791])
     side_length = 1000
 
-    batch_ids = latlon_to_cell_batch(lats, lons, side_length, Orientation.POINTY)
-    batch_lat, batch_lon = cell_to_latlon_batch(batch_ids)
+    batch_ids = lonlat_to_cell_batch(lons, lats, side_length, Orientation.POINTY)
+    batch_lon, batch_lat = cell_to_lonlat_batch(batch_ids)
 
     for i in range(len(lats)):
-        scalar_lon, scalar_lat = centroid(int(batch_ids[i]), latlon=True).coords[0]
+        scalar_lon, scalar_lat = centroid(int(batch_ids[i]), lonlat=True).coords[0]
         assert abs(batch_lat[i] - scalar_lat) < 1e-9
         assert abs(batch_lon[i] - scalar_lon) < 1e-9
 
 
-def test_latlon_to_cell_batch_rejects_point_outside_area_of_use():
+def test_lonlat_to_cell_batch_rejects_point_outside_area_of_use():
     # London, Paris (outside EPSG:27700's area of use).
     lats = np.array([51.5074, 48.8566])
     lons = np.array([-0.1278, 2.3522])
     with pytest.raises(ValueError, match="area of use"):
-        latlon_to_cell_batch(lats, lons, side_length=500)
+        lonlat_to_cell_batch(lons, lats, side_length=500)
 
 
-def test_latlon_to_cell_batch_still_maps_nan_to_invalid():
+def test_lonlat_to_cell_batch_still_maps_nan_to_invalid():
     lats = np.array([51.5074, np.nan])
     lons = np.array([-0.1278, np.nan])
-    ids = latlon_to_cell_batch(lats, lons, side_length=500)
+    ids = lonlat_to_cell_batch(lons, lats, side_length=500)
     assert ids[1] == 0
 
 
@@ -231,7 +233,7 @@ def test_bng_to_cell_batch_matches_scalar():
 
 
 def test_bng_to_cell_batch_maps_nan_to_invalid():
-    """Mirrors latlon_to_cell_batch: a NaN coordinate is an absent point, not an encode error."""
+    """Mirrors lonlat_to_cell_batch: a NaN coordinate is an absent point, not an encode error."""
     x = np.array([530034.0, np.nan])
     y = np.array([180381.0, np.nan])
 
@@ -245,3 +247,22 @@ def test_bng_to_cell_batch_rejects_coordinates_beyond_the_bit_budget():
     """No area-of-use guard on the BNG path, but the q/r range check still catches absurd input."""
     with pytest.raises(ValueError, match="representable range"):
         bng_to_cell_batch(np.array([1e15]), np.array([1e15]), side_length=1)
+
+
+# --- deprecated lat-first spellings ------------------------------------------------------------
+
+
+def test_deprecated_latlon_to_cell_batch_warns_and_takes_lats_first():
+    lats, lons = [51.5074, 55.9533], [-0.1278, -3.1883]
+    with pytest.deprecated_call(match="lonlat_to_cell_batch"):
+        old = latlon_to_cell_batch(lats, lons, 500)
+    assert np.array_equal(old, lonlat_to_cell_batch(lons, lats, 500))
+
+
+def test_deprecated_cell_to_latlon_batch_warns_and_returns_lat_first():
+    ids = lonlat_to_cell_batch([-0.1278, -3.1883], [51.5074, 55.9533], 500)
+    with pytest.deprecated_call(match="cell_to_lonlat_batch"):
+        lat, lon = cell_to_latlon_batch(ids)
+    new_lon, new_lat = cell_to_lonlat_batch(ids)
+    assert np.array_equal(lat, new_lat)
+    assert np.array_equal(lon, new_lon)

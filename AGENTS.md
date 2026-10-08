@@ -21,11 +21,12 @@ The library is small enough to read in full; do that before extending it. Key mo
 | [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex` |
 | [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (array input gives the deduplicated union) |
 | [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
-| [geo.py](src/beahiv/geo.py) | Public geographic interface: `latlon_to_cell`, `bng_to_cell` (WGS84 ↔ EPSG:27700 ↔ cell id), plus `_cell_centre`, the scalar centre lookup behind `geometry.centroid` |
+| [geo.py](src/beahiv/geo.py) | Public geographic interface: `lonlat_to_cell`, `bng_to_cell` (WGS84 ↔ EPSG:27700 ↔ cell id), plus `_cell_centre`, the scalar centre lookup behind `geometry.centroid` |
 | [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry, nothing stored: `cell_polygon`/`cell_polygons` → Shapely `Polygon`(s), `centroid`/`centroids` → Shapely `Point`(s) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
 | [batch.py](src/beahiv/batch.py) | numpy-vectorised equivalents of the scalar API, for bulk encode/decode |
-| [points.py](src/beahiv/points.py) | `point_to_cell` — Shapely/geopandas point geometry (EPSG:27700 only) → cell ids (needs Shapely) |
+| [points.py](src/beahiv/points.py) | `point_to_cell` — Shapely/geopandas point geometry (EPSG:27700, or WGS84 lon/lat) → cell ids (needs Shapely) |
+| [skill_cli.py](src/beahiv/skill_cli.py) | `beahiv-skill install\|remove ROOT` console script: installs/removes [skill/SKILL.md](src/beahiv/skill/SKILL.md), the *user-facing* agent skill, at `ROOT/skills/beahiv/` |
 | [polyfill.py](src/beahiv/polyfill.py) | `polyfill(polygon, ...)` — the one function that does point-in-polygon queries (needs Shapely); `bbox_fill(...)`/`resize_cell(...)` are convenience wrappers around it, seeded by a bounding box / an existing cell's own polygon |
 
 Tests are in [tests/](tests/), one `test_*.py` per module plus [tests/_geom_helpers.py](tests/_geom_helpers.py)
@@ -89,19 +90,28 @@ field) should get a directly corresponding test rather than being covered incide
   and arithmetic happens in EPSG:27700 metres. Only `geo.py` and its vectorised mirror `batch.py`
   import `pyproj` and project; everything else — `cell_id.py`, `coords.py`, `geometry.py`,
   `neighbours.py`, `morton.py`, `points.py`, `polyfill.py` — never does and never should.
-  This is why `geometry.centroid(cell_id, latlon=True)` delegates to `geo._cell_centre` and
-  `batch.cell_to_latlon_batch` for the WGS84 leg rather than holding a `Transformer` of its own —
+  This is why `geometry.centroid(cell_id, lonlat=True)` delegates to `geo._cell_centre` and
+  `batch.cell_to_lonlat_batch` for the WGS84 leg rather than holding a `Transformer` of its own —
   there are already two copies of that transformer without adding a third. Note this is now the
   *only* reason `_cell_centre` is split out; the Shapely half of that justification went away with
   the import allowlist (rule 6 below), so `centroid` could move into `geo.py` whole if the
   projection rule is ever the one that gives.
-- **Nothing outside `geo.py`/`batch.py` reprojects, including `points.py`.** Shapely geometry
-  carries no CRS — no `.crs`, and the GEOS SRID slot is always `0` because geopandas doesn't set
-  it — so there is nothing to reproject *from* and inferring one would be a guess. `point_to_cell`
-  therefore requires EPSG:27700 input and only *validates*: `points._check_crs` raises when a
-  geopandas container declares any other CRS, duck-typed on `.crs` so no geopandas (or `pyproj`)
-  import is needed. Don't "improve" this into automatic reprojection; callers use `.to_crs(27700)`,
-  or `latlon_to_cell` for WGS84.
+- **`point_to_cell` accepts EPSG:27700 or WGS84, and nothing else; it never projects itself.**
+  Shapely geometry carries no CRS — no `.crs`, and the GEOS SRID slot is always `0` because
+  geopandas doesn't set it — so the CRS comes from a geopandas container's `.crs` (duck-typed, no
+  geopandas or `pyproj` import) when one is declared, and from the `lonlat` flag otherwise; a
+  `lonlat` that contradicts a declared CRS raises (`points._resolve_lonlat`). WGS84 coordinates are
+  handed to `lonlat_to_cell`/`lonlat_to_cell_batch`, so the projection and its area-of-use guard
+  stay in `geo.py`/`batch.py`. Any other declared CRS raises rather than being reprojected — don't
+  widen this to arbitrary CRSs, which would need a general transformer outside those two modules;
+  callers use `.to_crs(27700)`.
+- **WGS84 is always (lon, lat) — x then y — in arguments, returned tuples and `Point`s alike.**
+  That is the shapely/GeoJSON order and pyproj's `always_xy`, so nothing is ever swapped
+  internally. Any new WGS84-facing function takes/returns lon first and says `lonlat` in its name
+  or flag. `latlon_to_cell`, `latlon_to_cell_batch`, `cell_to_latlon_batch` and the `latlon=`
+  keyword on `centroid`/`centroids` are deprecated lat-first wrappers kept for migration only —
+  don't call them internally (`pytest -W error::DeprecationWarning` passes outside their own
+  deprecation tests), and remove them together when they go.
 - **Validate lat/lon against EPSG:27700's area of use before projecting.** Outside
   `lat ∈ [49.75, 61.01]`, `lon ∈ [-9.01, 2.01]` (`pyproj.CRS.from_epsg(27700).area_of_use`), PROJ
   *extrapolates* rather than erroring — a swapped or garbage lat/lon can produce an (x, y) millions
@@ -122,7 +132,7 @@ field) should get a directly corresponding test rather than being covered incide
   sync. (This is exactly how `cartesian_to_axial_batch`'s POINTY branch once drifted from the
   scalar version — a "simplification" that swapped `qf`/`rf` instead of recomputing them looked
   equivalent but wasn't; `ty` doesn't catch it, only a same-orientation batch-vs-scalar test does.)
-- **`latlon_to_cell` and `bng_to_cell` dispatch transparently on scalar vs array-like input.** A plain `int`/`float` takes the pure-Python path (no numpy import); anything else
+- **`lonlat_to_cell` and `bng_to_cell` dispatch transparently on scalar vs array-like input.** A plain `int`/`float` takes the pure-Python path (no numpy import); anything else
   (`list`, `np.ndarray`, pandas `Series`, ...) dispatches to the `beahiv.batch` equivalent. This is
   implemented with `@overload` + `numpy.typing.ArrayLike`, not a `float | np.ndarray` union — a
   plain union return type makes every call site's return type ambiguous to `ty`/pyright, and a
@@ -147,6 +157,11 @@ field) should get a directly corresponding test rather than being covered incide
 - **No comments explaining *what* the code does.** Only add one when the *why* is non-obvious — a
   hidden constraint, a subtle invariant, a workaround for specific behaviour. This is the existing
   style throughout `cell_id.py`, `coords.py`, `geo.py`; match it.
+- **`skill/SKILL.md` is the library's usage guide for agents in *downstream* projects; this file
+  is for developing beahiv itself.** It ships in the wheel and is installed by
+  `beahiv-skill install`. Update it whenever public behaviour or a gotcha changes.
+  `test_skill_cli.py` fails if a public callable in `__all__` isn't mentioned in it. Its
+  Python blocks are reformatted by `ruff format` like any other Markdown.
 - **Don't add abstractions ahead of need.** This codebase favours a few explicit lines over a
   premature helper (e.g. `_check_in_area_of_use` is duplicated in scalar/batch form rather than
   factored through a shared numpy-only helper that the scalar path would then have to import numpy
@@ -178,7 +193,7 @@ When reviewing a PR or diff, check:
    non-zero reserved field: `decode` refusing it is what keeps those bits free to mean something
    later, so don't relax it to "ignore unknown bits".
 5. **Dispatch typing** — a new scalar/array dual-mode function uses `@overload` +
-   `numpy.typing.ArrayLike`, matching `latlon_to_cell`/`bng_to_cell`, not a bare
+   `numpy.typing.ArrayLike`, matching `lonlat_to_cell`/`bng_to_cell`, not a bare
    `X | np.ndarray` union return type. A function returning *Shapely* takes the other route:
    a scalar/plural name pair (`cell_polygon`/`cell_polygons`, `centroid`/`centroids`), because
    a `Point` and a `list[Point]` aren't one overloaded return the way a scalar and an array are.
@@ -196,11 +211,11 @@ When reviewing a PR or diff, check:
    and each widening cost a round of code contortion first — `geo._cell_centre` exists because of
    it. Removed rather than widened a third time. Nothing may import geopandas at all,
    anywhere, including `points.py`'s own tests: `points.py` duck-types on `.geometry`/`.crs` for
-   geopandas-style containers, but [tests/test_points.py](tests/test_points.py) only exercises the
-   plain-Shapely surface (a `Point`, or a list/ndarray of them) — the container-duck-typing branches
-   aren't covered by this test suite at all.
+   geopandas-style containers, and [tests/test_points.py](tests/test_points.py) covers those
+   branches with `_Container`, a plain class carrying just `.geometry`/`.crs`/`__array__`.
 7. **Docs** — if the public API, dependency list, or design rationale changes, update
-   [README.md](README.md) (quickstart, API reference table, and "Core concepts" as relevant).
+   [README.md](README.md) (quickstart, API reference table, and "Core concepts" as relevant), and
+   [skill/SKILL.md](src/beahiv/skill/SKILL.md) if what a *user* needs to know changed.
 
 ## QA Rules
 
@@ -249,11 +264,13 @@ src/
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
     hierarchy.py        # get_parent(s) / get_child(ren) -- 2x/0.5x side_length: same-centroid (singular) or overlapping (plural)
     morton.py          # Z-order variant of encode/decode
-    geo.py             # WGS84 <-> EPSG:27700 <-> cell id (latlon_to_cell, bng_to_cell)
+    geo.py             # WGS84 <-> EPSG:27700 <-> cell id (lonlat_to_cell, bng_to_cell)
     geometry.py         # cell_polygon(s) -> Polygon(s), centroid(s) -> Point(s), generated on demand (needs Shapely)
     neighbours.py       # get_neighbours, distance, k_ring
     batch.py            # numpy-vectorised equivalents of the scalar API
-    points.py           # Shapely/geopandas points -> cell ids, EPSG:27700 only (needs Shapely)
+    points.py           # Shapely/geopandas points -> cell ids, EPSG:27700 or WGS84 (needs Shapely)
+    skill_cli.py        # beahiv-skill install|remove ROOT: skill/ <-> ROOT/skills/beahiv/
+    skill/SKILL.md      # agent skill for *using* beahiv -- ships in the wheel
     polyfill.py          # polygon/bbox/cell -> hex grid (needs Shapely)
 tests/
   _geom_helpers.py      # Shapely-free area / point-in-polygon helpers, test-only

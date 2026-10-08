@@ -1,17 +1,18 @@
 """`point_to_cell` — the shapely/geopandas geometry entry point.
 
-Tests only the plain Shapely surface `point_to_cell` accepts on its own -- a `Point`, or a
-list/ndarray of them -- not any geopandas-shaped container (no GeoSeries/GeoDataFrame, real or
-faked). `points.py`'s `.crs`/`.geometry` duck-typing for such containers is exercised by callers
-that actually have geopandas installed, not by this suite.
+Mostly the plain Shapely surface -- a `Point`, or a list/ndarray of them. geopandas is never
+imported; the CRS-dispatch tests at the end use `_Container`, a plain class carrying just the
+`.geometry`/`.crs` pair `points.py` duck-types on, because the declared CRS now decides how
+coordinates are read rather than merely being checked.
 """
 
 import numpy as np
 import pytest
 import shapely
+from pyproj import CRS
 from shapely import LineString, Point, Polygon
 
-from beahiv import Orientation, bng_to_cell, decode, point_to_cell
+from beahiv import Orientation, bng_to_cell, centroid, decode, lonlat_to_cell, point_to_cell
 from beahiv.cell_id import INVALID_CELL_ID
 
 _BNG_POINTS = [(530000.0, 180000.0), (531000.0, 181000.0), (409000.0, 802000.0)]
@@ -125,3 +126,84 @@ def test_undeclared_crs_is_assumed_to_be_bng():
     # taken at its word as EPSG:27700 metres.
     assert point_to_cell(np.array([Point(530000, 180000)]), 100)[0] == bng_to_cell(530000.0, 180000.0, 100)
     assert point_to_cell(Point(530000, 180000), 100) == bng_to_cell(530000.0, 180000.0, 100)
+
+
+# --- WGS84 input -------------------------------------------------------------------------------
+
+_LATLONS = [(51.5007, -0.1246), (55.9533, -3.1883), (53.4808, -2.2426)]
+
+
+class _Container:
+    """The `.geometry`/`.crs` pair a GeoSeries exposes, without importing geopandas."""
+
+    def __init__(self, points, epsg):
+        self.geometry = np.asarray(points, dtype=object)
+        self.crs = CRS.from_epsg(epsg)
+
+    def __array__(self, dtype=None, copy=None) -> np.ndarray:
+        return self.geometry
+
+
+def _lonlat_points():
+    return [Point(lon, lat) for lat, lon in _LATLONS]
+
+
+def test_lonlat_flag_matches_lonlat_to_cell():
+    for orientation in Orientation:
+        expected = [lonlat_to_cell(lon, lat, 100, orientation) for lat, lon in _LATLONS]
+        assert list(point_to_cell(_lonlat_points(), 100, orientation, lonlat=True)) == expected
+        assert [point_to_cell(p, 100, orientation, lonlat=True) for p in _lonlat_points()] == expected
+
+
+def test_lonlat_round_trips_through_centroid():
+    for orientation in Orientation:
+        cell_id = bng_to_cell(530000.0, 180000.0, 250, orientation)
+        assert point_to_cell(centroid(cell_id, lonlat=True), 250, orientation, lonlat=True) == cell_id
+
+
+def test_lonlat_missing_and_empty_points_become_invalid_cell_id():
+    points = np.array([Point(-0.1246, 51.5007), None, Point()], dtype=object)
+    cell_ids = point_to_cell(points, 100, lonlat=True)
+    assert cell_ids[0] == lonlat_to_cell(-0.1246, 51.5007, 100)
+    assert (cell_ids[1:] == INVALID_CELL_ID).all()
+    assert point_to_cell(None, 100, lonlat=True) == INVALID_CELL_ID
+    assert point_to_cell(Point(), 100, lonlat=True) == INVALID_CELL_ID
+
+
+def test_lonlat_swapped_axes_are_rejected():
+    # Point(lat, lon) instead of Point(lon, lat) falls outside EPSG:27700's area of use.
+    with pytest.raises(ValueError, match="area of use"):
+        point_to_cell(Point(51.5007, -0.1246), 100, lonlat=True)
+    with pytest.raises(ValueError, match="area of use"):
+        point_to_cell([Point(51.5007, -0.1246)], 100, lonlat=True)
+
+
+def test_container_crs_selects_the_coordinate_reading():
+    wgs84 = point_to_cell(_Container(_lonlat_points(), 4326), 100)
+    assert np.array_equal(wgs84, point_to_cell(_lonlat_points(), 100, lonlat=True))
+
+    bng = point_to_cell(_Container(_points(_BNG_POINTS), 27700), 100)
+    assert np.array_equal(bng, point_to_cell(_points(_BNG_POINTS), 100))
+
+
+def test_container_crs_agreeing_with_lonlat_flag_is_accepted():
+    assert np.array_equal(
+        point_to_cell(_Container(_lonlat_points(), 4326), 100, lonlat=True),
+        point_to_cell(_Container(_lonlat_points(), 4326), 100),
+    )
+    assert np.array_equal(
+        point_to_cell(_Container(_points(_BNG_POINTS), 27700), 100, lonlat=False),
+        point_to_cell(_Container(_points(_BNG_POINTS), 27700), 100),
+    )
+
+
+def test_container_crs_contradicting_lonlat_flag_raises():
+    with pytest.raises(ValueError, match="contradicts"):
+        point_to_cell(_Container(_lonlat_points(), 4326), 100, lonlat=False)
+    with pytest.raises(ValueError, match="contradicts"):
+        point_to_cell(_Container(_points(_BNG_POINTS), 27700), 100, lonlat=True)
+
+
+def test_container_in_an_unsupported_crs_raises():
+    with pytest.raises(ValueError, match="EPSG:3857"):
+        point_to_cell(_Container(_points(_BNG_POINTS), 3857), 100)
