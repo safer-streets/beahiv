@@ -94,6 +94,11 @@ def test_requires_an_action_and_a_root(argv):
         main(argv)
 
 
+def test_skill_is_lf_only():
+    # .gitattributes pins src/beahiv/skill/** to LF; without it a Windows checkout ships CRLF.
+    assert b"\r\n" not in _PACKAGED
+
+
 def test_skill_has_frontmatter_naming_it():
     text = _PACKAGED.decode()
     frontmatter = re.match(r"---\n(.*?)\n---\n", text, re.DOTALL)

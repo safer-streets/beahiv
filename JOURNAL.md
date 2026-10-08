@@ -38,6 +38,9 @@ Write the entry as part of the change, not after the fact.
   - Both commands refuse to touch a differing file without `--force`, because it may hold local
     edits. They check before changing anything, so a refused command never leaves a half-updated
     skill.
+  - `.gitattributes` pins `src/beahiv/skill/**` to LF. Windows CI checked it out as CRLF, which
+    broke the frontmatter test and would have shipped CRLF in a Windows-built wheel.
+    `test_skill_is_lf_only` guards this.
   - The recipes use geopandas/pandas, which beahiv doesn't depend on. They are documentation for
     callers, not code run here, so the no-geopandas rule for `src/`/`tests/` is untouched.
 - **Follow-ups** — The pandas/geopandas recipes aren't executed by any test, because neither is

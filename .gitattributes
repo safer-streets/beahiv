@@ -1,0 +1,3 @@
+# The agent skill ships in the wheel byte-for-byte, so keep it LF whatever platform checks it out
+# (and builds the wheel): a Windows checkout would otherwise convert it to CRLF.
+src/beahiv/skill/** text eol=lf
