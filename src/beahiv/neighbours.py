@@ -3,7 +3,7 @@ geometry is constructed."""
 
 from typing import SupportsIndex
 
-from .cell_id import decode, encode
+from .cell_id import decode, encode_size
 
 NEIGHBOUR_OFFSETS: tuple[tuple[int, int], ...] = (
     (1, 0),
@@ -16,17 +16,19 @@ NEIGHBOUR_OFFSETS: tuple[tuple[int, int], ...] = (
 
 
 def get_neighbours(cell_id: SupportsIndex) -> tuple[int, ...]:
-    """Return the six neighbouring cell ids, same side_length/orientation."""
+    """Return the six neighbouring cell ids, same size/orientation/measure."""
     idx = decode(cell_id)
-    return tuple(encode(idx.q + dq, idx.r + dr, idx.side_length, idx.orientation) for dq, dr in NEIGHBOUR_OFFSETS)
+    return tuple(
+        encode_size(idx.q + dq, idx.r + dr, idx.size, idx.measure, idx.orientation) for dq, dr in NEIGHBOUR_OFFSETS
+    )
 
 
 def distance(cell_a: SupportsIndex, cell_b: SupportsIndex) -> int:
     """Hex grid distance (number of hops) between two cells."""
     a = decode(cell_a)
     b = decode(cell_b)
-    if a.side_length != b.side_length or a.orientation != b.orientation:
-        raise ValueError("distance requires both cells to share side_length and orientation")
+    if a.size != b.size or a.orientation != b.orientation or a.measure != b.measure:
+        raise ValueError("distance requires both cells to share size, orientation and measure")
 
     ax, az, ay = a.q, a.r, -a.q - a.r
     bx, bz, by = b.q, b.r, -b.q - b.r
@@ -45,5 +47,5 @@ def k_ring(cell_id: SupportsIndex, k: int) -> tuple[int, ...]:
         r_lo = max(-k, -dq - k)
         r_hi = min(k, -dq + k)
         for dr in range(r_lo, r_hi + 1):
-            cells.append(encode(idx.q + dq, idx.r + dr, idx.side_length, idx.orientation))
+            cells.append(encode_size(idx.q + dq, idx.r + dr, idx.size, idx.measure, idx.orientation))
     return tuple(cells)

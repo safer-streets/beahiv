@@ -44,9 +44,9 @@ def cell_polygons(cell_ids: CellIdsLike) -> list[Polygon | None]:
     input. `None` rather than an empty `Polygon`: it is what geopandas reads as a missing geometry
     (`isna()`), and what `shapely.to_wkb` turns back into a null.
 
-    Every valid cell must share the same side_length and orientation -- the same restriction
+    Every valid cell must share the same size, orientation and measure -- the same restriction
     `batch.cell_centre_batch` already applies to the vectorised centre lookup this reuses,
-    since a single angle set / radius only applies to one orientation and side_length at a time.
+    since a single angle set / radius only applies to one orientation and side length at a time.
     """
     xc, yc, side_length, orientation = _cell_centres(cell_ids)
     valid = ~np.isnan(xc)
@@ -81,7 +81,7 @@ def centroids(cell_ids: CellIdsLike, *, lonlat: bool = False) -> list[Point | No
     """Vectorised version of the above: one `Point` for every cell in `cell_ids`.
 
     Takes anything `batch.cell_centre_batch` does, and applies the same restriction -- every valid
-    cell must share one side_length and orientation. A missing or invalid id gives `None`, as in
+    cell must share one size, orientation and measure. A missing or invalid id gives `None`, as in
     `cell_polygons`. Returns `Point`s for symmetry with `cell_polygons`;
     callers wanting plain coordinate columns (`gdf["x"], gdf["y"] = ...`) should use
     `batch.cell_centre_batch` / `batch.cell_to_lonlat_batch` directly, which is what this wraps.

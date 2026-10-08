@@ -12,7 +12,7 @@ description: >-
 
 beahiv is a hexagonal spatial index for Great Britain, native to **EPSG:27700** (British National
 Grid metres). Think of it as a local H3 with exact, flat-plane geometry. Each cell is a single
-`int64` id that encodes `(q, r, side_length, orientation)`, and every cell at a given size has
+`int64` id that encodes `(q, r, size, measure, orientation)`, and every cell at a given size has
 the same area.
 
 ```python
@@ -38,13 +38,18 @@ from beahiv import Orientation
    - Shapely or geopandas points: `point_to_cell`. A declared container CRS of 27700 or 4326 is
      honoured, and any other CRS raises (reproject with `.to_crs(27700)` first). Bare `Point`s
      and lists carry no CRS and are read as EPSG:27700 unless you pass `lonlat=True`.
-4. **`side_length` is a whole number of metres**, from 1 to 100,000, and must be an `int`, not a
-   float. There is no resolution table: 200 means 200 m sides. `orientation` defaults to
-   `Orientation.FLAT`. Pick one `side_length`/`orientation` pair per analysis and pass it
+4. **Size is keyword-only: exactly one of `side_length=` or `side_to_side=`.** `side_length` is
+   the length of an edge and `side_to_side` the distance between two parallel edges. Either is a
+   whole number of metres from 1 to 100,000, and must be an `int`, not a float. There is no
+   resolution table: `side_length=200` means 200 m edges. Passing both, neither, or a bare
+   positional number raises `TypeError`. `orientation` (default `Orientation.FLAT`) and
+   `predicate` are keyword-only too. The id records which measure was used (`SizeMeasure`), so
+   decoded cells keep it. Pick one size, measure and orientation per analysis and pass them
    everywhere.
-5. **Different grids don't mix.** Never compare or combine ids across sizes or orientations
-   (FLAT and POINTY are different lattices). `distance`, `cell_polygons` and `centroids` need
-   every id to share one `side_length` and `orientation`.
+5. **Different grids don't mix.** Never compare or combine ids across sizes, measures or
+   orientations. FLAT and POINTY are different lattices, and so are `side_length=200` and
+   `side_to_side=200`. `distance`, `cell_polygons` and `centroids` need every id to share one
+   size, measure and orientation.
 6. **Sizes don't nest.** Cells of different sizes don't tile each other. Use `resize_cell`
    for a covering at any other size. `get_parents`/`get_children` (overlapping cells at 2x/0.5x)
    and `get_parent`/`get_child` (same-centroid cell at 2x/0.5x, often `None`) are factor-of-two
@@ -53,7 +58,7 @@ from beahiv import Orientation
    encode to it rather than raising. Going the other way, the *batch* functions tolerate a
    null or invalid id (`INVALID_CELL_ID`, `None`, `NaN`, pandas `<NA>`, Arrow null):
    `cell_polygons`/`centroids` give `None` for that row, `batch.cell_centre_batch` gives NaN,
-   `batch.decode_batch` gives zeros (`side_length == 0`), and array `get_parents`/`get_children`
+   `batch.decode_batch` gives zeros (`size == 0`), and array `get_parents`/`get_children`
    skip it. The *scalar* functions (`decode`, `cell_polygon`, `centroid`, `get_neighbours`, ...)
    still **raise** for one. Keep id columns integer: pandas `Int64` or Arrow `int64` for nullable
    ids, never float64, which has already corrupted any id it holds and raises `TypeError`.
@@ -64,8 +69,10 @@ from beahiv import Orientation
    `df["cell_id"] = ...`. Shapely-returning functions come in singular/plural pairs instead:
    `centroid` takes one id and `centroids` many, and the same goes for `cell_polygon` and
    `cell_polygons`.
-9. **Store ids as signed 64-bit** (`int64`, DuckDB `BIGINT`, Arrow `int64`). Every id is below
-   2**61. Scalar functions accept `np.int64` ids directly.
+9. **Store ids as signed 64-bit** (`int64`, DuckDB `BIGINT`, Arrow `int64`). Every id fits a
+   signed int64. Scalar functions accept `np.int64` ids directly.
+10. **Ids from beahiv before 0.1.0 are not compatible.** 0.1.0 moved the grid origin, so an older
+    id still decodes, but to a different place. Regenerate stored ids rather than mixing them.
 
 ## Recipes
 
@@ -104,7 +111,7 @@ full = cells.merge(counts, on="cell_id", how="left").fillna({"n": 0})
 The `predicate` argument to `polyfill`/`bbox_fill`/`resize_cell` decides which cells are kept:
 `"overlap"` (any overlap, the default for `polyfill`/`bbox_fill`), `"centre"`/`"center"` (the
 cell centre is inside, the default for `resize_cell`) or `"full"` (wholly inside). To fill a
-bounding box without building a polygon, use `bbox_fill(minx, miny, maxx, maxy, side_length)`.
+bounding box without building a polygon, use `bbox_fill(minx, miny, maxx, maxy, side_length=...)`.
 
 Neighbourhoods and smoothing:
 
@@ -118,7 +125,8 @@ Change resolution:
 
 ```python
 beahiv.resize_cell(cell_id, new_side_length=50)  # any size, smaller or larger
-beahiv.get_children(cell_id)  # 7 cells at side_length/2 (needs even side_length)
+beahiv.resize_cell(cell_id, new_side_to_side=100)  # or by side-to-side distance
+beahiv.get_children(cell_id)  # 7 cells at half the size (needs an even size)
 beahiv.get_parents(cell_ids)  # array in: deduplicated union of 2x cells
 ```
 
@@ -128,8 +136,9 @@ Centres and decoding:
 beahiv.centroid(cell_id)  # Point in EPSG:27700
 beahiv.centroid(cell_id, lonlat=True)  # Point(lon, lat)
 beahiv.centroids(cell_ids, lonlat=True)  # list[Point | None], None for a missing/invalid id
-beahiv.decode(cell_id)  # CellIndex(q, r, side_length, orientation)
-beahiv.encode(q, r, side_length, Orientation.FLAT)
+beahiv.decode(cell_id)  # CellIndex(q, r, size, measure, orientation); .side_length is geometric
+beahiv.encode(q, r, side_length=200, orientation=Orientation.FLAT)
+beahiv.encode(q, r, side_to_side=200)  # measure recorded as SizeMeasure.SIDE_TO_SIDE
 ```
 
 For plain coordinate columns rather than `Point`s, use `beahiv.batch.cell_centre_batch(ids)`,
@@ -148,7 +157,9 @@ Exchange geometry as WKB. For vectorised UDFs, use `type="arrow"` and pass the p
 import shapely
 from duckdb.sqltypes import BIGINT, BLOB, DOUBLE
 
-con.create_function("bh_cell", lambda x, y: beahiv.bng_to_cell(x, y, 200), [DOUBLE, DOUBLE], BIGINT, type="arrow")
+con.create_function(
+    "bh_cell", lambda x, y: beahiv.bng_to_cell(x, y, side_length=200), [DOUBLE, DOUBLE], BIGINT, type="arrow"
+)
 con.create_function(
     "bh_cell_polygon", lambda ids: shapely.to_wkb(beahiv.cell_polygons(ids)), [BIGINT], BLOB, type="arrow"
 )
@@ -160,7 +171,9 @@ The UDF has to return WKB as `BLOB` and be parsed with `ST_GeomFromWKB` in SQL, 
 can't cast a `BLOB` return to `GEOMETRY`. WKB carries no SRID, so set the CRS after the data
 arrives in Python.
 
-Bind `side_length`/`orientation` in the lambda rather than passing them as UDF arguments.
+Bind the size and `orientation` in the lambda rather than passing them as UDF arguments. If the
+size has to come from SQL, take the measure as a string equal to the Python keyword and forward it
+as `**{measure: size}`, so that a misspelt measure raises instead of being read as a side length.
 `bh_cell_polygon` raises if one chunk mixes grids, so use a per-row `cell_polygon` UDF if a
 column can do that.
 
@@ -173,6 +186,9 @@ column can do that.
 - `ValueError` from `decode`: the id is `INVALID_CELL_ID`, a Morton or foreign id, or corrupt.
 - `TypeError: cell ids must be integers, not floats`: the id column went through float64,
   usually an int64 column that gained a `NaN`. Keep it `Int64`/Arrow `int64`.
-- `ValueError: ... requires a single side_length/orientation per call` or `distance requires both
-  cells to share ...`: ids from different grids were mixed.
+- `TypeError: a cell size is required`, `... not both`, or `takes N positional arguments`: pass
+  exactly one of `side_length=`/`side_to_side=`, by keyword.
+- `ValueError: ... requires a single size / size measure / orientation per call` or `distance
+  requires both cells to share ...`: ids from different grids were mixed.
+- `ValueError: no 0.5x size cell ... is odd`: `get_child`/`get_children` need an even size.
 - `TypeError` mentioning `centroids`/`centroid for one`: you used the singular form with an array, or the reverse.
