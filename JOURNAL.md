@@ -25,8 +25,8 @@ Write the entry as part of the change, not after the fact.
   - README quickstart outputs recomputed. They were stale even on this branch: with the moved
     origin, Trafalgar Square decodes to `q=706`, not 707. The API table shows keyword-only
     signatures.
-- **Design decisions** — Version is 0.1.0, not the branch's 2.0.0. `main` had since renumbered to
-  0.0.x ("(de)bump version"), and under 0.x a breaking change bumps the minor version.
+- **Design decisions** — Version is 1.0.0, not the branch's 2.0.0: `main` had since renumbered
+  to 0.0.x ("(de)bump version"). The rebase first used 0.1.0; the user chose 1.0.0 instead.
 - **Follow-ups** — As before: safer-streets-tooling and the notebook need keyword sizes and
   `lonlat_to_cell`.
 
@@ -50,7 +50,7 @@ Write the entry as part of the change, not after the fact.
   - DuckDB: one UDF with a measure-string argument over one UDF per measure — SQL stays explicit
     and a bad measure is a Python `TypeError`, not a silent side length.
 - **Follow-ups**
-  - Breaking for every positional caller -- hence a breaking version bump (0.1.0 after the rebase onto main).
+  - Breaking for every positional caller -- hence a breaking version bump (1.0.0 after the rebase onto main).
   - safer-streets-tooling and the exploratory notebook still call positionally.
 
 ## Side-to-side cell sizing, and a named grid origin (`ho-compat` branch)

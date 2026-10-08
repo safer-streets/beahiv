@@ -67,8 +67,9 @@ from beahiv import Orientation
    `cell_polygons`.
 9. **Store ids as signed 64-bit** (`int64`, DuckDB `BIGINT`, Arrow `int64`). Every id fits a
    signed int64. Scalar functions accept `np.int64` ids directly.
-10. **Ids from beahiv before 0.1.0 are not compatible.** 0.1.0 moved the grid origin, so an older
-    id still decodes, but to a different place. Regenerate stored ids rather than mixing them.
+10. **Ids made before 1.0.0 are not compatible.** That means 0.0.x and the earlier 1.0.1 release,
+    which predates 1.0.0. 1.0.0 moved the grid origin, so an older id still decodes, but to a
+    different place. Regenerate stored ids rather than mixing them.
 
 ## Recipes
 
