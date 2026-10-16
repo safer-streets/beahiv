@@ -251,11 +251,14 @@ def test_measure_bit_is_the_only_difference_between_the_measures():
         assert by_width == by_side | (1 << MEASURE_SHIFT)
 
 
-def test_encode_requires_size_and_measure():
-    with pytest.raises(TypeError, match="measure"):
-        encode(0, 0, size=100)  # ty: ignore[missing-argument] -- the missing measure is the point
+def test_encode_requires_size():
     with pytest.raises(TypeError, match="size"):
         encode(0, 0, measure=Measure.EDGE_LENGTH)  # ty: ignore[missing-argument] -- the missing size is the point
+
+
+def test_encode_measure_defaults_to_edge_length():
+    assert encode(3, -2, size=100) == encode(3, -2, size=100, measure=Measure.EDGE_LENGTH)
+    assert decode(encode(3, -2, size=100)).measure == Measure.EDGE_LENGTH
 
 
 @pytest.mark.parametrize("measure", [0, 1, Orientation.POINTY, Orientation.FLAT, "edge", None])

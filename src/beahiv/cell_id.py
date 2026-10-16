@@ -41,8 +41,9 @@ in range. A decimal three-significant-digit field, tried first, broke that for 1
 there are no non-canonical patterns to reject -- only a size below SIZE_MIN.
 
 The measure bit says what the size measures: the length of a side (0) or the distance between two
-parallel sides (1) -- `Measure.EDGE_LENGTH` or `Measure.EDGE_TO_EDGE`. Callers always name it, with the
-required `measure=` argument that accompanies every `size=` (see `resolve_size`).
+parallel sides (1) -- `Measure.EDGE_LENGTH` or `Measure.EDGE_TO_EDGE`. Callers choose it with
+the `measure=` argument that accompanies every `size=`, defaulting to EDGE_LENGTH (see
+`resolve_size`).
 
 q/r get 19 bits each, offset to fit the National Grid box (0-700km east, 0-1300km north) at the
 smallest cell allowed: a geometric side length of SIDE_LENGTH_MIN metres. That
@@ -202,14 +203,14 @@ def encode(
     r: SupportsIndex,
     *,
     size: SupportsIndex,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> int:
     """Encode an axial cell at a given size/orientation into a cell id.
 
     `size` is in whole metres, from SIZE_MIN to 65,472 (above 1023, with 10 significant bits -- see
     the module docstring), and `measure` says what it measures: `Measure.EDGE_LENGTH` (the length of an
-    edge) or `Measure.EDGE_TO_EDGE` (the distance between two parallel edges). Both are required.
+    edge) or `Measure.EDGE_TO_EDGE` (the distance between two parallel edges), defaulting to EDGE_LENGTH.
     Accepts numpy integers as well as `int` -- see the module docstring.
     """
     size, measure = resolve_size(size, measure)

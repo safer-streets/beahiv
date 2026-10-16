@@ -83,8 +83,7 @@ def test_morton_round_trip_edge_to_edge():
         )
 
 
-def test_encode_morton_requires_size_and_measure():
-    with pytest.raises(TypeError):
-        encode_morton(0, 0, size=100)  # ty: ignore[missing-argument] -- the missing measure is the point
+def test_encode_morton_measure_defaults_to_edge_length_and_must_be_a_measure():
+    assert encode_morton(3, -2, size=100) == encode_morton(3, -2, size=100, measure=Measure.EDGE_LENGTH)
     with pytest.raises(TypeError, match="measure must be a Measure"):
         encode_morton(0, 0, size=100, measure=Orientation.FLAT)  # ty: ignore[invalid-argument-type]

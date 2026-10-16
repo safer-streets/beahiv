@@ -248,10 +248,11 @@ def test_polyfill_edge_to_edge_centre_cells_have_centres_inside():
     )
 
 
-def test_polyfill_requires_size_and_measure():
+def test_polyfill_requires_size_and_defaults_the_measure():
     polygon = _square(0, 0, 100, 100)
+    assert polyfill(polygon, size=10) == polyfill(polygon, size=10, measure=Measure.EDGE_LENGTH)
     with pytest.raises(TypeError):
-        polyfill(polygon, size=10)  # ty: ignore[missing-argument] -- the missing measure is the point
+        polyfill(polygon, measure=Measure.EDGE_LENGTH)  # ty: ignore[missing-argument] -- the missing size is the point
     with pytest.raises(TypeError, match="measure must be a Measure"):
         polyfill(polygon, size=10, measure=1)  # ty: ignore[invalid-argument-type] -- the bad measure is the point
 

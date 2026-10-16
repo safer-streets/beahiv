@@ -68,10 +68,10 @@ def encode_morton(
     r: SupportsIndex,
     *,
     size: SupportsIndex,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> int:
-    """Morton-ordered `encode`: the same arguments, including the required size and measure."""
+    """Morton-ordered `encode`: the same arguments, including size and measure."""
     q = index(q)
     r = index(r)
     size, measure = resolve_size(size, measure)

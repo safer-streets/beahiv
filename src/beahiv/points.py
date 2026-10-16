@@ -63,7 +63,7 @@ def point_to_cell(
     points: Point | None,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = ...,
     orientation: Orientation = ...,
     lonlat: bool | None = ...,
 ) -> int: ...
@@ -72,7 +72,7 @@ def point_to_cell(
     points: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = ...,
     orientation: Orientation = ...,
     lonlat: bool | None = ...,
 ) -> np.ndarray: ...
@@ -80,7 +80,7 @@ def point_to_cell(
     points: "ArrayLike | Point | None",
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
     lonlat: bool | None = None,
 ) -> "int | np.ndarray":
@@ -106,7 +106,7 @@ def point_to_cell(
     wrong cells. The lon/lat path does not have this problem: it goes through `lonlat_to_cell`'s
     area-of-use check, which also rejects `Point(lat, lon)` written the wrong way round.
 
-    `size` and `measure` are required, as for `lonlat_to_cell`.
+    `size` is required and `measure` defaults to EDGE_LENGTH, as for `lonlat_to_cell`.
 
     The array form returns numpy rather than a `Series` so that assigning it back
     (`gdf["cell_id"] = point_to_cell(gdf, size=100, measure=Measure.EDGE_LENGTH)`) is positional and

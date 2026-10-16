@@ -130,13 +130,13 @@ field) should get a directly corresponding test rather than being covered incide
   *different physical point* under each orientation, and the two only agree at `(0, 0)`. Never
   compare, reuse, or mix `q`/`r` (or cell ids) across orientations. See the docstrings in
   [coords.py](src/beahiv/coords.py) and [orientation.py](src/beahiv/orientation.py).
-- **Cell size is `size=` plus a required `measure=`, and the id records the measure.** Every
-  public size-taking function takes the pair — plus `orientation`, and `predicate` where there is
-  one — as keyword-only arguments (`f(x, y, *, size, measure, orientation=...)`), so no call can
-  pass a number whose measure is implicit. Don't add a positional form back, and don't give
-  `measure` a default: `size=200` alone would silently mean one lattice. The one exception is
-  `resize_cell`, whose `measure=None` means the source cell's own (known, not implied), like its
-  `orientation=None`. It funnels them through `cell_id.resolve_size` → `(int, Measure)`, which
+- **Cell size is `size=` plus `measure=` (default `EDGE_LENGTH`), and the id records the
+  measure.** Every public size-taking function takes the pair — plus `orientation`, and
+  `predicate` where there is one — as keyword-only arguments (`f(x, y, *, size,
+  measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT)`). Don't add a positional form back.
+  The `EDGE_LENGTH` default is the user's call (it was briefly required); keep it the same on
+  every function, scalar and batch, as `orientation`'s `FLAT` is. The one exception is
+  `resize_cell`, whose `measure=None` means the source cell's own, like its `orientation=None`. It funnels them through `cell_id.resolve_size` → `(int, Measure)`, which
   insists on a real `Measure` member: `Measure` and `Orientation` are both 0/1 IntEnums, so
   `Measure(x)` would accept `1` or `Orientation.FLAT` without complaint. From there, keep the two
   kinds of "size" apart: the stored integer (`CellIndex.size`, `encode_size`) is what encoding and

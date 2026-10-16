@@ -212,9 +212,8 @@ def test_edge_to_edge_point_falls_within_its_cell():
 
 
 @pytest.mark.parametrize("fn", [lonlat_to_cell, bng_to_cell])
-def test_scalar_paths_require_size_and_measure(fn):
-    with pytest.raises(TypeError, match="measure"):
-        fn(-0.1, 51.5, size=100)
+def test_scalar_paths_require_size_and_default_the_measure(fn):
+    assert fn(-0.1, 51.5, size=100) == fn(-0.1, 51.5, size=100, measure=Measure.EDGE_LENGTH)
     with pytest.raises(TypeError, match="size"):
         fn(-0.1, 51.5, measure=Measure.EDGE_LENGTH)
     with pytest.raises(TypeError, match="measure must be a Measure"):

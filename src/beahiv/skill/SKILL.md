@@ -38,14 +38,14 @@ from beahiv import Orientation
    - Shapely or geopandas points: `point_to_cell`. A declared container CRS of 27700 or 4326 is
      honoured, and any other CRS raises (reproject with `.to_crs(27700)` first). Bare `Point`s
      and lists carry no CRS and are read as EPSG:27700 unless you pass `lonlat=True`.
-4. **Size is two required keywords: `size=` and `measure=`.** `measure=Measure.EDGE_LENGTH`
-   makes `size` the length of an edge, and `measure=Measure.EDGE_TO_EDGE` the distance between
-   two parallel edges. There is no default measure. `size` is a whole number of metres from 3 m
+4. **Size is keyword-only: `size=`, plus `measure=` saying what it measures.** The default,
+   `measure=Measure.EDGE_LENGTH`, makes `size` the length of an edge, and
+   `measure=Measure.EDGE_TO_EDGE` the distance between two parallel edges. `size` is a whole number of metres from 3 m
    to 65,472 m (6 m minimum for `EDGE_TO_EDGE`), and must be an
    `int`, not a float. Every metre up to 1,023 is valid; above that a size needs 10 significant
    binary digits, so 1000, 1500, 5000 and 10000 work but 1025 and 14500 raise, and the error names
-   the nearest valid sizes (14496, 14512). 2x and 0.5x of a valid size are always valid. There is no resolution table: `size=200, measure=Measure.EDGE_LENGTH` means 200 m edges.
-   Leaving out either keyword, passing a bare positional number, or passing a `measure` that
+   the nearest valid sizes (14496, 14512). 2x and 0.5x of a valid size are always valid. There is no resolution table: `size=200` means 200 m edges.
+   Leaving out `size`, passing a bare positional number, or passing a `measure` that
    isn't a `Measure` member (a plain `0`/`1` included) raises `TypeError`. `orientation` (default `Orientation.FLAT`) and
    `predicate` are keyword-only too. The id records which measure was used (`Measure`), so
    decoded cells keep it. Pick one size, measure and orientation per analysis and pass them
@@ -88,16 +88,14 @@ from beahiv import Orientation
 Points in a DataFrame to cells:
 
 ```python
-df["cell_id"] = beahiv.lonlat_to_cell(df["lon"], df["lat"], size=200, measure=beahiv.Measure.EDGE_LENGTH)
-df["cell_id"] = beahiv.bng_to_cell(
-    df["easting"], df["northing"], size=200, measure=beahiv.Measure.EDGE_LENGTH
-)  # if already BNG
+df["cell_id"] = beahiv.lonlat_to_cell(df["lon"], df["lat"], size=200)
+df["cell_id"] = beahiv.bng_to_cell(df["easting"], df["northing"], size=200)  # if already BNG
 ```
 
 A GeoDataFrame of points to cells. The CRS must be 27700 or 4326:
 
 ```python
-gdf["cell_id"] = beahiv.point_to_cell(gdf, size=200, measure=beahiv.Measure.EDGE_LENGTH)
+gdf["cell_id"] = beahiv.point_to_cell(gdf, size=200)
 ```
 
 Aggregate to a hex GeoDataFrame:
@@ -115,7 +113,7 @@ Cover a boundary with cells, so that empty cells show up as zeros:
 
 ```python
 boundary = area_gdf.to_crs(27700).union_all()  # polyfill needs EPSG:27700 Shapely geometry
-cells = pd.DataFrame({"cell_id": beahiv.polyfill(boundary, size=200, measure=beahiv.Measure.EDGE_LENGTH)})
+cells = pd.DataFrame({"cell_id": beahiv.polyfill(boundary, size=200)})
 full = cells.merge(counts, on="cell_id", how="left").fillna({"n": 0})
 ```
 
@@ -148,7 +146,7 @@ beahiv.centroid(cell_id)  # Point in EPSG:27700
 beahiv.centroid(cell_id, lonlat=True)  # Point(lon, lat)
 beahiv.centroids(cell_ids, lonlat=True)  # list[Point | None], None for a missing/invalid id
 beahiv.decode(cell_id)  # CellIndex(q, r, size, measure, orientation); .side_length is geometric
-beahiv.encode(q, r, size=200, measure=beahiv.Measure.EDGE_LENGTH, orientation=Orientation.FLAT)
+beahiv.encode(q, r, size=200, orientation=Orientation.FLAT)
 beahiv.encode(q, r, size=200, measure=beahiv.Measure.EDGE_TO_EDGE)  # the id records the measure
 ```
 
@@ -166,7 +164,7 @@ from duckdb.sqltypes import BIGINT, BLOB, DOUBLE
 
 con.create_function(
     "bh_cell",
-    lambda x, y: beahiv.bng_to_cell(x, y, size=200, measure=beahiv.Measure.EDGE_LENGTH),
+    lambda x, y: beahiv.bng_to_cell(x, y, size=200),
     [DOUBLE, DOUBLE],
     BIGINT,
     type="arrow",
@@ -201,7 +199,7 @@ column can do that.
   double the size would be.
 - `ValueError: ... reserved bits set`: usually an id from before the current layout. Regenerate it.
 - `TypeError: missing ... keyword-only argument`, `measure must be a Measure`, or `takes N
-  positional arguments`: pass both `size=` and `measure=Measure.EDGE_LENGTH`/`EDGE_TO_EDGE`, by
+  positional arguments`: pass `size=` (and optionally `measure=Measure.EDGE_TO_EDGE`), by
   keyword.
 - `ValueError: ... requires a single size / size measure / orientation per call` or `distance
   requires both cells to share ...`: ids from different grids were mixed.

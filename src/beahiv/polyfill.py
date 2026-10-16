@@ -51,13 +51,13 @@ def polyfill(
     polygon: BaseGeometry,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
     predicate: str = "overlap",
 ) -> list[int]:
     """Return the ids of every (size, orientation) hex cell covering `polygon`.
 
-    `size` and `measure` are required, as for `lonlat_to_cell`.
+    `size` is required and `measure` defaults to EDGE_LENGTH, as for `lonlat_to_cell`.
 
     `polygon` is a Shapely `Polygon`/`MultiPolygon` in EPSG:27700 metres --
     beahiv's native CRS, so no reprojection happens here.
@@ -100,7 +100,7 @@ def bbox_fill(
     maxy: float,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
     predicate: str = "overlap",
 ) -> list[int]:

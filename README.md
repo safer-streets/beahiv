@@ -119,7 +119,7 @@ import beahiv
 from beahiv import Orientation
 
 # Trafalgar Square, London, indexed on a 500m flat-top hex grid.
-cell_id = beahiv.lonlat_to_cell(-0.1278, 51.5074, size=500, measure=beahiv.Measure.EDGE_LENGTH)
+cell_id = beahiv.lonlat_to_cell(-0.1278, 51.5074, size=500)
 
 beahiv.decode(cell_id)
 # CellIndex(q=706, r=-145, size=500, measure=<Measure.EDGE_LENGTH: 0>, orientation=<Orientation.FLAT: 1>)
@@ -202,18 +202,19 @@ Two things this does *not* enforce:
 
 ### Size and measure
 
-Every function that takes a cell size takes it as two required
-**keyword-only** arguments, `size=` and `measure=` — leave either out, or pass
-a `measure` that isn't a `Measure`, and it raises `TypeError`. There is
-deliberately no positional form and no default measure (`orientation` and
-`predicate` are keyword-only too), so every call says what its number means:
+Every function that takes a cell size takes it as two **keyword-only**
+arguments: `size=` (required) and `measure=`, which says what that number
+measures and defaults to `Measure.EDGE_LENGTH`. Leave out `size`, or pass a
+`measure` that isn't a `Measure`, and it raises `TypeError`. There is
+deliberately no positional form (`orientation` and `predicate` are
+keyword-only too):
 
-- `Measure.EDGE_LENGTH` — `size` is the length of one edge.
+- `Measure.EDGE_LENGTH` (the default) — `size` is the length of one edge.
 - `Measure.EDGE_TO_EDGE` — `size` is the distance between two opposite,
   parallel edges, which is `sqrt(3)` edge lengths.
 
 ```python
-beahiv.bng_to_cell(530034, 180381, size=200, measure=beahiv.Measure.EDGE_LENGTH)  # 200m edges
+beahiv.bng_to_cell(530034, 180381, size=200)  # 200m edges, the same as measure=beahiv.Measure.EDGE_LENGTH
 beahiv.bng_to_cell(530034, 180381, size=200, measure=beahiv.Measure.EDGE_TO_EDGE)  # 200m across, edge ~115.5m
 ```
 
@@ -232,8 +233,8 @@ carries both halves: `size` is the stored value and `measure` the
 side length they imply (`size` itself for an `EDGE_LENGTH` cell).
 The two measures are different lattices even at the same number, like the
 two orientations: never compare q/r across them. `resize_cell` is the one
-place `measure` is optional: it defaults to the source cell's own (as
-`orientation` does), and either may be overridden.
+exception to the default: there `measure` defaults to the source cell's own
+(as `orientation` does), and either may be overridden.
 
 ### Parent/child at 2x/0.5x `side_length`
 
@@ -252,12 +253,12 @@ partner, or nothing -- pure parity arithmetic, no geometry, a cheap way
 to ask whether a cell happens to line up exactly with the 2x/0.5x grid:
 
 ```python
-cell_id = beahiv.encode(4, -6, size=100, measure=beahiv.Measure.EDGE_LENGTH)
+cell_id = beahiv.encode(4, -6, size=100)
 parent = beahiv.get_parent(cell_id)  # side_length=200, same centroid
 child = beahiv.get_child(cell_id)  # side_length=50, same centroid
 assert beahiv.get_child(parent) == cell_id
 
-odd_q = beahiv.encode(3, -6, size=100, measure=beahiv.Measure.EDGE_LENGTH)
+odd_q = beahiv.encode(3, -6, size=100)
 beahiv.get_parent(odd_q)  # None -- odd q, no same-centroid parent
 ```
 
@@ -267,7 +268,7 @@ exists and always covers the cell, and is what you want when resizing by
 a factor of two:
 
 ```python
-beahiv.get_parents(beahiv.encode(3, -6, size=100, measure=beahiv.Measure.EDGE_LENGTH))  # the 2 straddled 200m cells
+beahiv.get_parents(beahiv.encode(3, -6, size=100))  # the 2 straddled 200m cells
 beahiv.get_parents(cell_id)  # 1 -- an even-q/r cell lies wholly inside its same-centroid parent
 beahiv.get_children(cell_id)  # 7 x 50m: the same-centroid child, plus its k_ring of 1
 ```
@@ -442,7 +443,7 @@ pass a list, a numpy array, or a pandas Series and get one back
 (`centroid` is scalar-only; its array form is `centroids`):
 
 ```python
-cell_ids = beahiv.lonlat_to_cell(lons, lats, size=500, measure=beahiv.Measure.EDGE_LENGTH)  # lons/lats: array-like
+cell_ids = beahiv.lonlat_to_cell(lons, lats, size=500)  # lons/lats: array-like
 ```
 
 A plain scalar still takes the pure-Python path with no numpy import and
@@ -451,10 +452,9 @@ implementation in `beahiv.batch`, which also remains available directly
 for callers who want an unambiguous vectorised call:
 
 ```python
-from beahiv import Measure
 from beahiv.batch import lonlat_to_cell_batch, bng_to_cell_batch, cell_to_lonlat_batch
 
-cell_ids = lonlat_to_cell_batch(lons, lats, size=500, measure=Measure.EDGE_LENGTH)
+cell_ids = lonlat_to_cell_batch(lons, lats, size=500)
 ```
 
 A missing coordinate (`NaN`) is an absent point rather than an error: it
@@ -513,7 +513,7 @@ Nulls arrive as `NaN` and so encode to `INVALID_CELL_ID`:
 ```python
 import pyarrow as pa
 
-cell_ids = beahiv.bng_to_cell(pa.array(xs), pa.array(ys), size=202, measure=beahiv.Measure.EDGE_LENGTH)
+cell_ids = beahiv.bng_to_cell(pa.array(xs), pa.array(ys), size=202)
 ```
 
 This is what makes beahiv usable as a vectorised UDF in an Arrow-native
@@ -522,7 +522,7 @@ query engine (DuckDB, Polars), where a per-row Python call would dominate:
 ```python
 con.create_function(
     "beahiv_cell",
-    lambda x, y: beahiv.bng_to_cell(x, y, size=202, measure=beahiv.Measure.EDGE_LENGTH),
+    lambda x, y: beahiv.bng_to_cell(x, y, size=202),
     [DOUBLE, DOUBLE],
     BIGINT,
     type="arrow",
@@ -550,7 +550,7 @@ Point data usually arrives as a single geometry column rather than as
 separate x and y sequences. `point_to_cell` takes that column directly:
 
 ```python
-gdf["cell_id"] = beahiv.point_to_cell(gdf, size=202, measure=beahiv.Measure.EDGE_LENGTH)
+gdf["cell_id"] = beahiv.point_to_cell(gdf, size=202)
 ```
 
 It accepts a `GeoDataFrame` (its active geometry column is used), a
@@ -580,7 +580,7 @@ or WGS84 `Point(lon, lat)` — the x/y order `centroid(lonlat=True)` returns.
 A `GeoDataFrame` or `GeoSeries` says which through its `.crs`:
 
 ```python
-beahiv.point_to_cell(gdf, size=202, measure=beahiv.Measure.EDGE_LENGTH)  # gdf.crs is EPSG:27700 or EPSG:4326
+beahiv.point_to_cell(gdf, size=202)  # gdf.crs is EPSG:27700 or EPSG:4326
 ```
 
 Any other declared CRS raises rather than being silently misread — WGS84
@@ -596,7 +596,7 @@ so there is nothing to infer a CRS *from*. A `Point`, list or ndarray (or a
 `lonlat=True`:
 
 ```python
-beahiv.point_to_cell(Point(-0.1246, 51.5007), size=202, measure=beahiv.Measure.EDGE_LENGTH, lonlat=True)
+beahiv.point_to_cell(Point(-0.1246, 51.5007), size=202, lonlat=True)
 ```
 
 Passing a `lonlat` that contradicts a declared CRS raises. WGS84 input
@@ -616,7 +616,7 @@ spatial joins:
 
 ```python
 # polygon must be in EPSG:27700
-cell_ids = beahiv.polyfill(polygon, size=500, measure=beahiv.Measure.EDGE_LENGTH, orientation=Orientation.FLAT)
+cell_ids = beahiv.polyfill(polygon, size=500, orientation=Orientation.FLAT)
 ```
 
 `predicate` (default `"overlap"`) controls what counts as covering,
@@ -629,9 +629,7 @@ arbitrary polygon, `beahiv.bbox_fill` is a thin convenience wrapper —
 same `predicate` semantics, no need to build a Shapely `Polygon` first:
 
 ```python
-cell_ids = beahiv.bbox_fill(
-    minx, miny, maxx, maxy, size=500, measure=beahiv.Measure.EDGE_LENGTH, orientation=Orientation.FLAT
-)
+cell_ids = beahiv.bbox_fill(minx, miny, maxx, maxy, size=500, orientation=Orientation.FLAT)
 ```
 
 For resizing a cell you already have -- covering its hexagon with cells
@@ -790,7 +788,7 @@ Property tests cover:
 
 | Function | Description |
 | --- | --- |
-| `encode(q, r, *, size, measure, orientation)` | Build a cell id. Every size-taking function below requires `size` and `measure` the same way |
+| `encode(q, r, *, size, measure=EDGE_LENGTH, orientation=FLAT)` | Build a cell id. Every size-taking function below takes `size` and `measure` the same way |
 | `decode(cell_id)` | Recover `CellIndex(q, r, size, measure, orientation)`; raises for any id `encode` couldn't have produced |
 | `Measure` | `EDGE_LENGTH` / `EDGE_TO_EDGE` — what a cell's `size` measures |
 | `INVALID_CELL_ID` | The all-zero sentinel emitted for missing input — scalar `decode` raises for it; the batch functions give a missing value |

@@ -156,9 +156,9 @@ def test_point_to_cell_edge_to_edge_matches_bng_to_cell():
     )
 
 
-def test_point_to_cell_requires_size_and_measure_even_with_no_points():
+def test_point_to_cell_checks_size_and_measure_even_with_no_points():
     with pytest.raises(TypeError):
-        point_to_cell([], size=100)  # ty: ignore[no-matching-overload] -- the missing measure is the point
+        point_to_cell([], measure=Measure.EDGE_LENGTH)  # ty: ignore[no-matching-overload] -- the missing size is the point
     with pytest.raises(TypeError, match="measure must be a Measure"):
         point_to_cell(None, size=100, measure=1)  # ty: ignore[no-matching-overload] -- the bad measure is the point
     with pytest.raises(TypeError, match="measure must be a Measure"):

@@ -130,12 +130,12 @@ def encode_batch(
     r: np.ndarray,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode axial coordinates into int64 cell ids -- see `cell_id.encode` for the layout.
 
-    `size` and `measure` are required, as for `cell_id.encode`.
+    `size` is required and `measure` defaults to EDGE_LENGTH, as for `cell_id.encode`.
     """
     q = np.asarray(q, dtype=np.int64)
     r = np.asarray(r, dtype=np.int64)
@@ -253,12 +253,12 @@ def lonlat_to_cell_batch(
     lats: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode each WGS84 (lon, lat) pair; NaN coordinates map to INVALID_CELL_ID.
 
-    `size` and `measure` are required, as for `cell_id.encode`.
+    `size` is required and `measure` defaults to EDGE_LENGTH, as for `cell_id.encode`.
 
     Raises if any non-NaN pair is outside EPSG:27700's area of use -- see `geo.lonlat_to_cell`.
     """
@@ -285,7 +285,7 @@ def latlon_to_cell_batch(
     lons: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Deprecated: use `lonlat_to_cell_batch(lons, lats, ...)` -- note the swapped argument order."""
@@ -297,7 +297,7 @@ def bng_to_cell_batch(
     y: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode each EPSG:27700 (x, y) pair; NaN coordinates map to INVALID_CELL_ID.
@@ -306,7 +306,7 @@ def bng_to_cell_batch(
     coordinate far outside GB is simply a cell far from the origin — and one far enough to exceed
     the q/r bit budget is rejected by ``encode_batch`` rather than wrapping silently.
 
-    `size` and `measure` are required, as for `cell_id.encode`.
+    `size` is required and `measure` defaults to EDGE_LENGTH, as for `cell_id.encode`.
     """
     s = side_length_of(*resolve_size(size, measure))
     x = np.asarray(x, dtype=np.float64)

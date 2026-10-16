@@ -398,17 +398,26 @@ def test_edge_to_edge_is_a_different_grid_from_edge_length():
 @pytest.mark.parametrize(
     "call",
     [
-        lambda: encode_batch(np.array([0]), np.array([0]), size=100),  # ty: ignore[missing-argument]
         lambda: encode_batch(np.array([0]), np.array([0]), measure=Measure.EDGE_LENGTH),  # ty: ignore[missing-argument]
-        lambda: bng_to_cell_batch([1.0], [1.0], size=100),  # ty: ignore[missing-argument]
         lambda: bng_to_cell_batch([1.0], [1.0], measure=Measure.EDGE_LENGTH),  # ty: ignore[missing-argument]
-        lambda: lonlat_to_cell_batch([-0.1], [51.5], size=100),  # ty: ignore[missing-argument]
         lambda: lonlat_to_cell_batch([-0.1], [51.5], measure=Measure.EDGE_LENGTH),  # ty: ignore[missing-argument]
     ],
 )
-def test_batch_paths_require_size_and_measure(call):
+def test_batch_paths_require_size(call):
     with pytest.raises(TypeError):
         call()
+
+
+@pytest.mark.parametrize(
+    ("fn", "a", "b"),
+    [
+        (encode_batch, np.array([4, -4]), np.array([-6, 6])),
+        (bng_to_cell_batch, [530_034.0, 380_000.0], [180_381.0, 400_000.0]),
+        (lonlat_to_cell_batch, [-0.1278, -3.1883], [51.5074, 55.9533]),
+    ],
+)
+def test_batch_paths_measure_defaults_to_edge_length(fn, a, b):
+    assert np.array_equal(fn(a, b, size=100), fn(a, b, size=100, measure=Measure.EDGE_LENGTH))
 
 
 @pytest.mark.parametrize("measure", [1, Orientation.FLAT, "edge"])

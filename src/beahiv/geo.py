@@ -82,7 +82,7 @@ def lonlat_to_cell(
     lat: float,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> int: ...
 @overload
@@ -91,7 +91,7 @@ def lonlat_to_cell(
     lat: "pa.Array | pa.ChunkedArray",
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> "pa.Array": ...
 @overload
@@ -100,7 +100,7 @@ def lonlat_to_cell(
     lat: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray: ...
 def lonlat_to_cell(
@@ -108,7 +108,7 @@ def lonlat_to_cell(
     lat: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> "int | np.ndarray | pa.Array":
     """Encode WGS84 (lon, lat), scalar or array-like, to a cell id (or array of ids).
@@ -116,7 +116,7 @@ def lonlat_to_cell(
     lon first: x then y, as everywhere else in this package.
 
     `size` is in whole metres and `measure` says what it measures: `Measure.EDGE_LENGTH` (the length of
-    an edge) or `Measure.EDGE_TO_EDGE` (the distance between two parallel edges). Both are required.
+    an edge) or `Measure.EDGE_TO_EDGE` (the distance between two parallel edges), defaulting to EDGE_LENGTH.
 
     A pyarrow array in gives a pyarrow array back (nulls become NaN, and so INVALID_CELL_ID).
 
@@ -144,7 +144,7 @@ def latlon_to_cell(
     lon: float,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> int: ...
 @overload
@@ -153,7 +153,7 @@ def latlon_to_cell(
     lon: "pa.Array | pa.ChunkedArray",
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> "pa.Array": ...
 @overload
@@ -162,7 +162,7 @@ def latlon_to_cell(
     lon: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray: ...
 @deprecated("latlon_to_cell(lat, lon, ...) is deprecated; use lonlat_to_cell(lon, lat, ...) -- note the argument order")
@@ -171,7 +171,7 @@ def latlon_to_cell(
     lon: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> "int | np.ndarray | pa.Array":
     """Deprecated: use `lonlat_to_cell(lon, lat, ...)` -- note the swapped argument order."""
@@ -184,7 +184,7 @@ def bng_to_cell(
     y: float,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> int: ...
 @overload
@@ -193,7 +193,7 @@ def bng_to_cell(
     y: "pa.Array | pa.ChunkedArray",
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> "pa.Array": ...
 @overload
@@ -202,7 +202,7 @@ def bng_to_cell(
     y: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray: ...
 def bng_to_cell(
@@ -210,7 +210,7 @@ def bng_to_cell(
     y: ArrayLike,
     *,
     size: int,
-    measure: Measure,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> "int | np.ndarray | pa.Array":
     """Encode an EPSG:27700 (x, y) point directly, with no WGS84 round trip.

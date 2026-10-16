@@ -7,6 +7,23 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## `measure` defaults to `EDGE_LENGTH`
+
+- **Why** — the user's call, reversing the "no default" decision in the entry below: requiring
+  `measure=` on every call was too verbose for the common case.
+- **What**
+  - Every public size-taking function's `measure` now defaults to `Measure.EDGE_LENGTH`, in
+    `cell_id`, `morton`, `geo`, `batch`, `points` and `polyfill`, scalar and batch alike.
+    `size` stays required. Internal `encode_size` keeps `measure` positional and required.
+  - Tests: the "requires size and measure" tests become "requires size" plus checks that the
+    default equals an explicit `EDGE_LENGTH`. The "refuses a measure that isn't a Measure" tests
+    are unchanged.
+  - README, SKILL.md and AGENTS.md describe the default. Doc examples drop a redundant
+    `measure=...EDGE_LENGTH`.
+- **Design decisions** — `resize_cell` keeps `measure=None` (the cell's own), not `EDGE_LENGTH`.
+  It already treats `orientation` that way instead of defaulting to `FLAT`, and resizing an
+  `EDGE_TO_EDGE` cell shouldn't silently switch lattice.
+
 ## `size=` + `measure=` replace `side_length=` / `side_to_side=`
 
 - **Why** — the user preferred `size=X, measure=bh.Measure...` over two mutually exclusive size
