@@ -26,11 +26,15 @@ from .cell_id import (
     Q_SHIFT,
     R_MASK,
     R_OFFSET,
-    RESERVED_MASK,
     RESERVED_SHIFT,
     SIDE_LENGTH_MASK,
-    SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
+    SIZE_EXPONENT_MAX,
+    SIZE_MANTISSA_BITS,
+    SIZE_MANTISSA_MASK,
+    SIZE_MANTISSA_MAX,
+    SIZE_MIN,
+    pack_size,
     resolve_size,
 )
 from .coords import ORIGIN_X, ORIGIN_Y, SQRT3, side_length_of
@@ -137,12 +141,8 @@ def encode_batch(
     q = np.asarray(q, dtype=np.int64)
     r = np.asarray(r, dtype=np.int64)
     size, measure = resolve_size(side_length, side_to_side)
-
-    # size doesn't fill its field, so an oversized one would overflow into
-    # the orientation bit rather than being masked off -- one scalar check per
-    # call, not per row, so the vectorised path pays nothing for it
-    if not (1 <= size <= SIDE_LENGTH_MAX):
-        raise ValueError(f"size must be in [1, {SIDE_LENGTH_MAX}], got {size}")
+    # one scalar size for the whole call, so it is packed (and validated) once, not per row
+    size_field = pack_size(size, measure)
 
     q_enc = q + Q_OFFSET
     r_enc = r + R_OFFSET
@@ -150,31 +150,32 @@ def encode_batch(
     if np.any((q_enc < 0) | (q_enc > Q_MASK)) or np.any((r_enc < 0) | (r_enc > R_MASK)):
         raise ValueError("q or r out of representable range")
 
-    # int64, never uint64: the reserved bits keep every id below 2**62, and a signed dtype is what
-    # a BIGINT column holds without conversion. Mixing uint64 with Python ints/int64 also silently
-    # promotes to float64 in numpy, which loses the low bits of an id.
+    # int64, never uint64: a signed dtype is what a BIGINT column holds without conversion
     return (
         (np.int64(int(measure)) << MEASURE_SHIFT)
         | (np.int64(int(orientation)) << ORIENTATION_SHIFT)
-        | (np.int64(size) << SIDE_LENGTH_SHIFT)
+        | (np.int64(size_field) << SIDE_LENGTH_SHIFT)
         | (q_enc << Q_SHIFT)
         | r_enc
     )
 
 
-_FLOAT_IDS = (
-    "cell ids must be integers, not floats: float64 holds only 53 bits exactly, so a 64-bit id stored "
-    "in one has already lost its low bits and would decode to the wrong cell. This usually means an "
-    "int64 column gained a NaN -- keep it integer instead (pandas 'Int64', or fill with INVALID_CELL_ID)"
-)
+_POW10 = np.array([10**e for e in range(SIZE_EXPONENT_MAX + 1)], dtype=np.int64)
+_SIZE_MIN = np.array(SIZE_MIN, dtype=np.int64)
+# a float id is exact below 2**53 (every valid one is); anything at or above can't be one anyway
+_FLOAT_ID_LIMIT = 2.0**53
+
+
+def _float_ids(ids: np.ndarray) -> np.ndarray:
+    whole = np.isfinite(ids) & (ids == np.floor(ids)) & (np.abs(ids) < _FLOAT_ID_LIMIT)
+    return np.where(whole, ids, INVALID_CELL_ID).astype(np.int64)
 
 
 def _object_ids(ids: np.ndarray) -> np.ndarray:
     out = np.full(ids.shape, INVALID_CELL_ID, dtype=np.int64)
     for i, value in np.ndenumerate(ids):
         if isinstance(value, (float, np.floating)):
-            if not np.isnan(value) and value != INVALID_CELL_ID:
-                raise TypeError(_FLOAT_IDS)
+            out[i] = _float_ids(np.array([value], dtype=np.float64))[0]
             continue
         try:
             value = index(value)
@@ -189,14 +190,14 @@ def _object_ids(ids: np.ndarray) -> np.ndarray:
 def _as_cell_id_array(cell_ids: CellIdsLike) -> np.ndarray:
     """Coerce an array-like of cell ids to int64, with every missing entry as INVALID_CELL_ID.
 
-    Nulls are filled *before* numpy sees the data, never after: `np.asarray` on a pandas `Int64`
-    column holding `<NA>` returns float64, and on a nullable pyarrow array likewise, which has
-    already destroyed every id above 2**53 -- every FLAT id, for one. Hence the duck-typed
-    `fillna` (pandas) / `fill_null` (pyarrow, polars) rather than a NaN check afterwards.
+    Floats are accepted: every valid id is below 2**52, so one that has been through a float64 (a
+    pandas int64 column that gained a NaN, a JSON number) comes back exact. NaN is missing, and a
+    non-integral or out-of-range float can't be an id, so it is treated the same way. Nulls are
+    still filled via the duck-typed `fillna` (pandas) / `fill_null` (pyarrow, polars) before numpy
+    sees the data, which keeps a nullable integer column integer rather than relying on that.
 
-    A float array is rejected unless it holds nothing but NaN/0, i.e. no id that could have been
-    damaged. uint64 is reinterpreted as int64, which turns an id with bit 63 set negative, where
-    the reserved-bit check in `decode_batch` sees it.
+    uint64 is reinterpreted as int64, which turns an id with bit 63 set negative, where the
+    reserved-bit check in `decode_batch` sees it.
     """
     fill = getattr(cell_ids, "fillna", None) or getattr(cell_ids, "fill_null", None)
     if fill is not None:
@@ -204,14 +205,12 @@ def _as_cell_id_array(cell_ids: CellIdsLike) -> np.ndarray:
     ids = np.asarray(cell_ids)
     if isinstance(cell_ids, (list, tuple)) and ids.dtype.kind not in "iu":
         # numpy infers float64 for a list mixing ints with a NaN *or* with one int >= 2**63, which
-        # the float check below would misreport -- read as objects, the Python ints stay exact
+        # would round the big int -- read as objects, the Python ints stay exact
         ids = np.asarray(cell_ids, dtype=object)
     if ids.dtype.kind in "iu":
         return ids.astype(np.int64, copy=False)
     if ids.dtype.kind == "f":
-        if np.any(~np.isnan(ids) & (ids != INVALID_CELL_ID)):
-            raise TypeError(_FLOAT_IDS)
-        return np.full(ids.shape, INVALID_CELL_ID, dtype=np.int64)
+        return _float_ids(ids)
     if ids.dtype.kind == "O":
         return _object_ids(ids)
     raise TypeError(f"cell ids must be integers, got an array of {ids.dtype}")
@@ -226,23 +225,30 @@ def decode_batch(
     measure is SIDE_TO_SIDE (see `coords.side_length_of`).
 
     Unlike scalar `decode`, a bad row doesn't raise: every id `decode` would reject (see
-    `cell_id.validate_cell_id`) -- INVALID_CELL_ID, a missing value, reserved bits set, a
-    size outside [1, SIDE_LENGTH_MAX] -- decodes to all zeros instead, exactly as
-    INVALID_CELL_ID's own bits read. `size == 0` is therefore the validity mask; no valid
-    id has it. Float input still raises -- see `_as_cell_id_array`.
+    `cell_id.validate_cell_id`) -- INVALID_CELL_ID, a missing value, reserved bits set, an invalid
+    size field -- decodes to all zeros instead, exactly as INVALID_CELL_ID's own bits read.
+    `size == 0` is therefore the validity mask; no valid id has it.
     """
     cell_ids = _as_cell_id_array(cell_ids)
 
     orientation = ((cell_ids >> ORIENTATION_SHIFT) & ORIENTATION_MASK).astype(np.uint8)
     measure = ((cell_ids >> MEASURE_SHIFT) & MEASURE_MASK).astype(np.uint8)
-    size = (cell_ids >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
+    size_field = (cell_ids >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
+    exponent = size_field >> SIZE_MANTISSA_BITS
+    mantissa = size_field & SIZE_MANTISSA_MASK
+    size = mantissa * _POW10[exponent]
     q = ((cell_ids >> Q_SHIFT) & Q_MASK) - Q_OFFSET
     r = (cell_ids & R_MASK) - R_OFFSET
 
-    # a negative id has bit 63 set, which is a reserved bit -- the arithmetic shift keeps
-    # those ones, so this rejects it rather than needing a sign check of its own
-    reserved = (cell_ids >> RESERVED_SHIFT) & RESERVED_MASK
-    invalid = (reserved != 0) | (size < 1) | (size > SIDE_LENGTH_MAX)
+    # mirrors cell_id.unpack_size and validate_cell_id. A negative id has bit 63 set, which the
+    # arithmetic shift keeps, so `>> RESERVED_SHIFT` is non-zero for it without a sign check
+    invalid = (
+        ((cell_ids >> RESERVED_SHIFT) != 0)
+        | (mantissa < 1)
+        | (mantissa > SIZE_MANTISSA_MAX)
+        | ((exponent > 0) & (mantissa < 100))
+        | (size < _SIZE_MIN[measure])
+    )
     if np.any(invalid):
         for field in (q, r, size, measure, orientation):
             field[invalid] = 0

@@ -1,77 +1,87 @@
-"""64-bit cell identifier encoding.
+"""Cell identifier encoding: a 52-bit layout, so every id is exact as a float64.
 
 Bit layout (MSB to LSB)::
 
-    [63..62]  reserved      2 bits  (always zero)
-    [61]      measure       1 bit   (see SizeMeasure)
-    [60]      orientation   1 bit   (see Orientation)
-    [59..43]  size         17 bits  (unsigned metres, 1..SIDE_LENGTH_MAX)
-    [42..22]  q_enc        21 bits  (q + Q_OFFSET)
-    [21..0]   r_enc        22 bits  (r + R_OFFSET)
+    [63..52]  reserved     12 bits  (always zero)
+    [51]      measure       1 bit   (see SizeMeasure)
+    [50]      orientation   1 bit   (see Orientation)
+    [49..38]  size         12 bits  (2-bit decimal exponent, 10-bit mantissa)
+    [37..19]  q_enc        19 bits  (q + Q_OFFSET)
+    [18..0]   r_enc        19 bits  (r + R_OFFSET)
 
-Size is stored directly (in whole metres) rather than as an index into a
-resolution table, so any grid spacing that fits the bit budget is
-representable without a lookup table. It is capped at 100km: a hexagon that
-size has an area larger than Wales, so nothing coarser is a meaningful unit
-inside GB, and the cap is what frees the top three bits.
+Every id is below 2**52, and so below 2**53, the largest range in which float64 holds every
+integer exactly. That is the point of the layout, not a side effect of it. Ids get pushed through
+floats all the time: pandas turns an int64 column into float64 the moment it gains a NaN,
+JSON treats every number as a double, and a merge or reindex can make the round
+trip without anyone noticing. Under the previous 64-bit layout an id came back from that rounded,
+yet still a well-formed id, so it decoded to a valid cell up to hundreds of kilometres away with
+nothing to say so. Below 2**53 the round trip is exact, so there is nothing to detect.
 
-The first of those three is the measure bit, saying what the size field
-measures: the length of a side (0 -- the layout before the bit existed, so
-every older id still decodes unchanged) or the distance between two parallel
-sides (1). Callers choose with the mutually exclusive `side_length` /
-`side_to_side` arguments (see `resolve_size`), and the cap applies to the
-stored size whichever it is.
+Of the reserved bits, only bit 52 may ever be given a meaning: an id that sets any bit above it is
+no longer exact as a float, which would bring the problem straight back (see FLOAT_EXACT_BITS).
+Until then `encode` never sets it and `decode` refuses an id that has it set, which is what keeps it
+free -- a decoder that ignored unknown bits could never start honouring one. Morton and plain ids
+are still indistinguishable, so decoding one with the wrong function yields wrong q/r rather than
+an error; the spare bit is the obvious candidate if that ever needs fixing.
 
-The other two are left reserved at the most significant end rather than spent,
-which puts every cell id below 2**62 -- comfortably inside a *signed* 64-bit
-integer, so consumers can store ids in a plain int64/BIGINT column instead of
-needing an unsigned type or a hex string. They are held for future use, such
-as flagging optional Morton encoding: a Morton id and a plain id are currently
-indistinguishable, so decoding one with the wrong function silently yields
-wrong q/r rather than an error. `encode` never sets them and `decode` refuses
-an id that has them set, which is what keeps them free to be given a meaning
-later -- a decoder that ignored unknown bits could never start honouring one.
+The size is a whole number of metres with at most three significant digits: `mantissa * 10 **
+exponent`, mantissa 1..999 and exponent 0..3. That spans 3m to 999km in 12 bits -- 25m, 1.5km, 14.5km
+and 500km are all representable, 1234m is not -- where storing the metres directly needed 17 bits
+for less range. Each size has exactly one encoding, the one with the smallest exponent, so a
+mantissa below 100 with a non-zero exponent is rejected; otherwise 500m could be stored as either
+500e0 or 50e1, giving one cell two ids.
 
-q/r get 21/22 bits (not stored per-orientation) which comfortably covers all
-of Great Britain down to ~1m side length -- far finer than the 25m floor
-anticipated by the spec.
+The measure bit says what the size measures: the length of a side (0) or the distance between two
+parallel sides (1). Callers choose with the mutually exclusive `side_length` / `side_to_side`
+arguments (see `resolve_size`).
+
+q/r get 19 bits each, offset to fit the National Grid box (0-700km east, 0-1300km north) at the
+smallest cell allowed: a geometric side length of SIDE_LENGTH_MIN metres. That
+minimum is what the 52-bit budget costs -- the old layout reached 1m. A smaller cell isn't simply
+unreachable at the edges of GB; it is rejected outright by `encode`, rather than encoding near the
+origin and raising further out.
 
 Cell ids and coordinates are taken as `SupportsIndex` rather than `int`, and
 coerced with `operator.index` on the way in. Ids reach the scalar API as numpy
 integers routinely -- an element of a `decode_batch` result, a pandas column, a
 DuckDB/Parquet BIGINT -- and numpy's fixed-width arithmetic is wrong for this
-bit layout in both directions: `& UINT64_MASK` raises OverflowError against an
-`np.int64` operand because the mask doesn't fit one, and a `q_enc - Q_OFFSET`
-that should go negative wraps around instead under `np.uint64`. Coercing at
-these entry points is what keeps every value downstream a plain Python int, so
-`neighbours`, `hierarchy` and `polyfill` need no numpy awareness of their own.
+bit layout: a `q_enc - Q_OFFSET` that should go negative wraps around under
+`np.uint64`. Coercing at these entry points is what keeps every value downstream
+a plain Python int, so `neighbours`, `hierarchy` and `polyfill` need no numpy
+awareness of their own.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from operator import index
 from typing import SupportsIndex
 
-from .coords import side_length_of
+from .coords import SQRT3, side_length_of
 from .measure import SizeMeasure
 from .orientation import Orientation
 
-R_BITS = 22
-Q_BITS = 21
-SIDE_LENGTH_BITS = 17
+R_BITS = 19
+Q_BITS = 19
+SIDE_LENGTH_BITS = 12
 ORIENTATION_BITS = 1
 MEASURE_BITS = 1
-RESERVED_BITS = 2
+RESERVED_BITS = 12
 
 assert R_BITS + Q_BITS + SIDE_LENGTH_BITS + ORIENTATION_BITS + MEASURE_BITS + RESERVED_BITS == 64
 
 R_SHIFT = 0
 Q_SHIFT = R_BITS
 SIDE_LENGTH_SHIFT = R_BITS + Q_BITS
-ORIENTATION_SHIFT = R_BITS + Q_BITS + SIDE_LENGTH_BITS
+ORIENTATION_SHIFT = SIDE_LENGTH_SHIFT + SIDE_LENGTH_BITS
 MEASURE_SHIFT = ORIENTATION_SHIFT + ORIENTATION_BITS
 RESERVED_SHIFT = MEASURE_SHIFT + MEASURE_BITS
+
+# float64 has a 53-bit significand, so it holds every integer below 2**53 exactly. The reserved
+# field's lowest bit is the only one that may ever be spent; this keeps ids exact even then.
+FLOAT_EXACT_BITS = 53
+assert RESERVED_SHIFT + 1 <= FLOAT_EXACT_BITS
 
 R_MASK = (1 << R_BITS) - 1
 Q_MASK = (1 << Q_BITS) - 1
@@ -80,22 +90,60 @@ ORIENTATION_MASK = (1 << ORIENTATION_BITS) - 1
 MEASURE_MASK = (1 << MEASURE_BITS) - 1
 RESERVED_MASK = (1 << RESERVED_BITS) - 1
 
-R_OFFSET = 1 << (R_BITS - 1)
-Q_OFFSET = 1 << (Q_BITS - 1)
+# Not centred on zero: GB lies north-east of the grid origin, so a symmetric range would waste most
+# of q/r's bits on the sea. These put the National Grid box, at a 3m side, near the middle of both
+# fields under both orientations (test_cell_id checks its corners encode). The slack either side is
+# large -- over 300km beyond every edge of the box even at 3m -- so nothing near GB is out of range.
+Q_OFFSET = 260_000
+R_OFFSET = 160_000
 
-SIDE_LENGTH_MAX = 100_000
+SIZE_MANTISSA_BITS = 10
+SIZE_MANTISSA_MASK = (1 << SIZE_MANTISSA_BITS) - 1
+SIZE_MANTISSA_MAX = 999
+SIZE_EXPONENT_MAX = 3
+assert SIZE_MANTISSA_MAX <= SIZE_MANTISSA_MASK
+assert SIZE_EXPONENT_MAX < 1 << (SIDE_LENGTH_BITS - SIZE_MANTISSA_BITS)
 
-# unlike q/r, the size doesn't use its whole field -- the cap is the limit,
-# not the mask, and encode() must check against the cap or a larger value would
-# silently overflow into the orientation bit. (The SIDE_LENGTH_* names predate
-# the measure bit; the field holds the size under either measure.)
-assert SIDE_LENGTH_MAX <= SIDE_LENGTH_MASK
+# geometric side length, metres -- the smallest cell whose q/r still cover the whole box
+SIDE_LENGTH_MIN = 3
+SIDE_LENGTH_MAX = SIZE_MANTISSA_MAX * 10**SIZE_EXPONENT_MAX
+
+# the smallest stored size meeting SIDE_LENGTH_MIN, indexed by SizeMeasure: side-to-side is
+# sqrt(3) times the side length
+SIZE_MIN = (SIDE_LENGTH_MIN, math.ceil(SIDE_LENGTH_MIN * SQRT3))
 
 UINT64_MASK = (1 << 64) - 1
 
-# size must be >= 1 (see encode()), so an all-zero id can never be
-# produced by a valid encode call -- safe to use as an "invalid" sentinel.
+# an all-zero size field has mantissa 0, which encode never produces -- so an all-zero id is safe
+# to use as an "invalid" sentinel.
 INVALID_CELL_ID = 0
+
+
+def pack_size(size: int, measure: SizeMeasure) -> int:
+    """Return the 12-bit size field for `size` metres, or raise if no field can hold it."""
+    if not (SIZE_MIN[measure] <= size <= SIDE_LENGTH_MAX):
+        raise ValueError(
+            f"size must be in [{SIZE_MIN[measure]}, {SIDE_LENGTH_MAX}] for {measure.name.lower()}, got {size}"
+        )
+    exponent = 0
+    mantissa = size
+    while mantissa > SIZE_MANTISSA_MAX and mantissa % 10 == 0:
+        mantissa //= 10
+        exponent += 1
+    if mantissa > SIZE_MANTISSA_MAX:
+        raise ValueError(
+            f"size {size} is not representable: sizes have at most 3 significant digits (e.g. 1230, not 1234)"
+        )
+    return (exponent << SIZE_MANTISSA_BITS) | mantissa
+
+
+def unpack_size(field: int) -> int:
+    """Return the size a 12-bit size field holds, or 0 if `pack_size` could not have produced it."""
+    exponent = field >> SIZE_MANTISSA_BITS
+    mantissa = field & SIZE_MANTISSA_MASK
+    if not (1 <= mantissa <= SIZE_MANTISSA_MAX) or (exponent and mantissa < 100):
+        return 0
+    return mantissa * 10**exponent
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,9 +151,8 @@ class CellIndex:
     """A decoded cell id. `size` is the stored whole-metre size, measured as `measure` says.
 
     `side_length` is the *geometric* side length that size implies -- the stored size itself for a
-    SIDE_LENGTH cell (so ids from before the measure bit read exactly as they always did), and
-    `size / sqrt(3)` for a SIDE_TO_SIDE one. It is what every geometric formula wants; encoding
-    and hierarchy arithmetic want `size`.
+    SIDE_LENGTH cell, and `size / sqrt(3)` for a SIDE_TO_SIDE one. It is what every geometric
+    formula wants; encoding and hierarchy arithmetic want `size`.
     """
 
     q: int
@@ -156,8 +203,8 @@ def encode(
     """Encode an axial cell at a given size/orientation into a cell id.
 
     Give exactly one of `side_length` (the length of an edge) or `side_to_side` (the distance
-    between two parallel edges), in whole metres. Accepts numpy integers as well as `int` -- see
-    the module docstring.
+    between two parallel edges), in whole metres with at most 3 significant digits. Accepts numpy
+    integers as well as `int` -- see the module docstring.
     """
     size, measure = resolve_size(side_length, side_to_side)
     return encode_size(q, r, size, measure, orientation)
@@ -174,10 +221,7 @@ def encode_size(
     `CellIndex` use, so they carry its measure through rather than re-deciding it."""
     q = index(q)
     r = index(r)
-    size = index(size)
-
-    if not (1 <= size <= SIDE_LENGTH_MAX):
-        raise ValueError(f"size must be in [1, {SIDE_LENGTH_MAX}], got {size}")
+    size_field = pack_size(index(size), measure)
 
     q_enc = q + Q_OFFSET
     r_enc = r + R_OFFSET
@@ -186,14 +230,13 @@ def encode_size(
     if not (0 <= r_enc <= R_MASK):
         raise ValueError(f"r is out of representable range: {r}")
 
-    cell_id = (
+    return (
         (int(measure) << MEASURE_SHIFT)
         | (int(orientation) << ORIENTATION_SHIFT)
-        | (size << SIDE_LENGTH_SHIFT)
+        | (size_field << SIDE_LENGTH_SHIFT)
         | (q_enc << Q_SHIFT)
         | r_enc
     )
-    return cell_id & UINT64_MASK
 
 
 def validate_cell_id(cell_id: SupportsIndex) -> tuple[int, int]:
@@ -204,25 +247,27 @@ def validate_cell_id(cell_id: SupportsIndex) -> tuple[int, int]:
 
     q/r fill their fields exactly, so every bit pattern is a valid coordinate and there is nothing
     to check there, and both values of the orientation and measure bits are meaningful. The other
-    two fields are not self-validating: size's limit is a range check rather than its bit width,
-    and the reserved field is only meaningful while it stays zero (see the module docstring -- a
-    future flag there is what would finally make a Morton id distinguishable from a plain one,
-    which requires decode to be looking at it).
+    two fields are not self-validating: the size field has non-canonical and out-of-range patterns
+    (see `unpack_size` and SIZE_MIN), and the reserved field is only meaningful while it stays zero.
 
     Shared by `decode` and `morton.decode_morton`, which differ only in how they read q/r.
     `batch.decode_batch` re-implements this vectorised rather than calling it per row.
     """
     cell_id = index(cell_id)
-    if not (0 <= cell_id <= UINT64_MASK):
-        raise ValueError("cell_id must fit within uint64")
+    if cell_id < 0:
+        raise ValueError(f"cell_id must not be negative, got {cell_id}")
     if cell_id == INVALID_CELL_ID:
         raise ValueError("cell_id is INVALID_CELL_ID, the missing-input sentinel -- filter these out before decoding")
-    if (cell_id >> RESERVED_SHIFT) & RESERVED_MASK:
-        raise ValueError(f"cell_id has reserved bits set, so is not a valid cell id: {cell_id:#018x}")
+    if cell_id >> RESERVED_SHIFT:
+        raise ValueError(
+            f"cell_id has reserved bits set, so is not a valid cell id: {cell_id:#x} -- "
+            "an id from before beahiv 1.0, or one that has been through a lossy conversion?"
+        )
 
-    size = (cell_id >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
-    if not (1 <= size <= SIDE_LENGTH_MAX):
-        raise ValueError(f"cell_id has size {size}, outside the encodable [1, {SIDE_LENGTH_MAX}]")
+    size = unpack_size((cell_id >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK)
+    measure = SizeMeasure((cell_id >> MEASURE_SHIFT) & MEASURE_MASK)
+    if size < SIZE_MIN[measure]:
+        raise ValueError(f"cell_id has an invalid size field: {cell_id:#x}")
     return cell_id, size
 
 

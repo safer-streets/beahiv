@@ -1,8 +1,9 @@
 """Optional Morton (Z-order) cell id variant.
 
 Same bit budget and same (measure, orientation, size) prefix as the plain
-id in cell_id.py, but q/r occupy an interleaved 43-bit region instead of
-being simply concatenated. This groups spatially-close cells into nearby
+id in cell_id.py, but q/r occupy an interleaved 38-bit region instead of
+being simply concatenated -- so a Morton id is below 2**52 and exact as a
+float64 too. This groups spatially-close cells into nearby
 integer ranges, which helps DuckDB clustering, Parquet sort-order pruning,
 and range scans. Fully reversible.
 """
@@ -21,10 +22,9 @@ from .cell_id import (
     R_BITS,
     R_MASK,
     R_OFFSET,
-    SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
-    UINT64_MASK,
     CellIndex,
+    pack_size,
     resolve_size,
     validate_cell_id,
 )
@@ -69,9 +69,7 @@ def encode_morton(
     q = index(q)
     r = index(r)
     size, measure = resolve_size(side_length, side_to_side)
-
-    if not (1 <= size <= SIDE_LENGTH_MAX):
-        raise ValueError(f"size must be in [1, {SIDE_LENGTH_MAX}], got {size}")
+    size_field = pack_size(size, measure)
 
     q_enc = q + Q_OFFSET
     r_enc = r + R_OFFSET
@@ -82,10 +80,12 @@ def encode_morton(
 
     morton = _interleave(q_enc, Q_BITS, r_enc, R_BITS)
 
-    cell_id = (
-        (int(measure) << MEASURE_SHIFT) | (int(orientation) << ORIENTATION_SHIFT) | (size << SIDE_LENGTH_SHIFT) | morton
+    return (
+        (int(measure) << MEASURE_SHIFT)
+        | (int(orientation) << ORIENTATION_SHIFT)
+        | (size_field << SIDE_LENGTH_SHIFT)
+        | morton
     )
-    return cell_id & UINT64_MASK
 
 
 def decode_morton(cell_id: SupportsIndex) -> CellIndex:

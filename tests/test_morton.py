@@ -15,18 +15,20 @@ from beahiv.cell_id import (
 )
 from beahiv.morton import decode_morton, encode_morton
 
+from ._sizes import random_size
+
 
 def test_morton_round_trip():
     rng = random.Random(0)
     for _ in range(2000):
         q = rng.randint(-(Q_OFFSET - 1), Q_OFFSET - 1)
         r = rng.randint(-(R_OFFSET - 1), R_OFFSET - 1)
-        side_length = rng.randint(1, SIDE_LENGTH_MAX)
+        side_length = random_size(rng)
         orientation = rng.choice(list(Orientation))
 
         cell_id = encode_morton(q, r, side_length=side_length, orientation=orientation)
         assert decode_morton(cell_id) == CellIndex(q, r, side_length, SizeMeasure.SIDE_LENGTH, orientation)
-        assert 0 <= cell_id < 2**64
+        assert 0 < cell_id < 2**52
 
 
 def test_morton_ids_differ_from_plain_ids_for_same_cell():
@@ -69,7 +71,7 @@ def test_morton_round_trip_side_to_side():
     for _ in range(500):
         q = rng.randint(-(Q_OFFSET - 1), Q_OFFSET - 1)
         r = rng.randint(-(R_OFFSET - 1), R_OFFSET - 1)
-        size = rng.randint(1, SIDE_LENGTH_MAX)
+        size = random_size(rng, SizeMeasure.SIDE_TO_SIDE)
         orientation = rng.choice(list(Orientation))
 
         cell_id = encode_morton(q, r, orientation=orientation, side_to_side=size)

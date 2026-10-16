@@ -7,6 +7,8 @@ from shapely import Point
 import beahiv
 from beahiv import Orientation, bng_to_cell, cell_polygon, centroid, centroids, decode, lonlat_to_cell
 
+from ._sizes import random_size
+
 
 def test_lonlat_round_trip_stays_within_one_cell():
     # London-ish, Edinburgh-ish, Cardiff-ish: spread across GB.
@@ -30,7 +32,7 @@ def test_lonlat_to_cell_is_deterministic():
     for _ in range(50):
         lat = rng.uniform(50.0, 58.5)
         lon = rng.uniform(-6.0, 1.5)
-        side_length = rng.randint(10, 5000)
+        side_length = random_size(rng, upto=5000)
         a = lonlat_to_cell(lon, lat, side_length=side_length)
         b = lonlat_to_cell(lon, lat, side_length=side_length)
         assert a == b

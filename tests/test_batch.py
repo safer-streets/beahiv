@@ -194,10 +194,8 @@ class _NullableColumn:
 
 
 def test_nullable_columns_are_filled_before_numpy_sees_them():
-    """Regression: a pandas Int64 column with a null went through float64 and came out with its
-    reserved bits apparently set (a rounded FLAT id), failing a decode it should have passed."""
-    assert int(np.asarray(_NullableColumn([_VALID]))[0]) != _VALID  # the precision loss being avoided
-
+    """A pandas Int64 column holding <NA> is filled via `fillna` and stays integer, rather than
+    going through the float64 numpy alone would make of it."""
     q, r, size, _, _ = decode_batch(_NullableColumn([_VALID, None]))
 
     assert size.tolist() == [100, 0]
@@ -209,19 +207,22 @@ def test_nullable_columns_are_filled_before_numpy_sees_them():
     [
         np.array([float(_VALID), np.nan]),
         [float(_VALID), None],
-        np.array([float(_VALID)], dtype=object),
+        np.array([float(_VALID), None], dtype=object),
     ],
 )
-def test_float_ids_raise_rather_than_decode_wrong(cell_ids):
-    """A FLAT id is >= 2**60, far past float64's 53 exact bits, so one that has been through a float
-    is the wrong cell -- which tolerance would turn into a silently wrong answer."""
-    with pytest.raises(TypeError, match="not floats"):
-        decode_batch(cell_ids)
+def test_float_ids_decode_exactly(cell_ids):
+    """Every id is below 2**52, so one that has been through a float64 -- the column a NaN turns an
+    int64 one into -- is still exactly itself, and decodes to the right cell."""
+    q, r, size, _, _ = decode_batch(cell_ids)
+    assert size.tolist() == [100, 0]
+    assert (q[0], r[0]) == (4, -6)
 
 
-def test_all_missing_floats_are_tolerated():
-    """A float column with nothing in it but NaN/0 has no id to have damaged."""
-    assert decode_batch(np.array([np.nan, 0.0]))[2].tolist() == [0, 0]
+def test_floats_that_cant_be_ids_are_missing():
+    """Non-integral, infinite, or too large to be exact (which no valid id is): none of them is an
+    id, so like any other invalid row they decode to zeros."""
+    cell_ids = np.array([float(_VALID) + 0.5, np.inf, -np.inf, 2.0**60, 0.0])
+    assert decode_batch(cell_ids)[2].tolist() == [0, 0, 0, 0, 0]
     assert decode_batch([])[2].tolist() == []
 
 
@@ -330,7 +331,7 @@ def test_bng_to_cell_batch_maps_nan_to_invalid():
 def test_bng_to_cell_batch_rejects_coordinates_beyond_the_bit_budget():
     """No area-of-use guard on the BNG path, but the q/r range check still catches absurd input."""
     with pytest.raises(ValueError, match="representable range"):
-        bng_to_cell_batch(np.array([1e15]), np.array([1e15]), side_length=1)
+        bng_to_cell_batch(np.array([1e15]), np.array([1e15]), side_length=3)
 
 
 def test_side_to_side_batch_paths_match_scalar():

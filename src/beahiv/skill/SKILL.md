@@ -40,8 +40,9 @@ from beahiv import Orientation
      and lists carry no CRS and are read as EPSG:27700 unless you pass `lonlat=True`.
 4. **Size is keyword-only: exactly one of `side_length=` or `side_to_side=`.** `side_length` is
    the length of an edge and `side_to_side` the distance between two parallel edges. Either is a
-   whole number of metres from 1 to 100,000, and must be an `int`, not a float. There is no
-   resolution table: `side_length=200` means 200 m edges. Passing both, neither, or a bare
+   whole number of metres with at most 3 significant digits, from 3 m to 999 km (6 m minimum for
+   `side_to_side`), and must be an `int`, not a float. So 25, 202, 1500 and 14500 work, and 1234
+   raises (use 1230). There is no resolution table: `side_length=200` means 200 m edges. Passing both, neither, or a bare
    positional number raises `TypeError`. `orientation` (default `Orientation.FLAT`) and
    `predicate` are keyword-only too. The id records which measure was used (`SizeMeasure`), so
    decoded cells keep it. Pick one size, measure and orientation per analysis and pass them
@@ -60,8 +61,8 @@ from beahiv import Orientation
    `cell_polygons`/`centroids` give `None` for that row, `batch.cell_centre_batch` gives NaN,
    `batch.decode_batch` gives zeros (`size == 0`), and array `get_parents`/`get_children`
    skip it. The *scalar* functions (`decode`, `cell_polygon`, `centroid`, `get_neighbours`, ...)
-   still **raise** for one. Keep id columns integer: pandas `Int64` or Arrow `int64` for nullable
-   ids, never float64, which has already corrupted any id it holds and raises `TypeError`.
+   still **raise** for one. A float64 id column (e.g. an int64 one that gained a `NaN`) is fine:
+   every id is below 2**52, so it survives a float exactly, and `NaN` is a missing row.
 8. **Scalar or array dispatch is automatic** for `lonlat_to_cell`, `bng_to_cell`, `point_to_cell`,
    `get_parents` and `get_children`. A Python `float`/`int` (or a single `Point`) gives a Python
    `int`. A list, ndarray, Series or pyarrow array gives an `int64` ndarray, or a pyarrow array
@@ -69,11 +70,14 @@ from beahiv import Orientation
    `df["cell_id"] = ...`. Shapely-returning functions come in singular/plural pairs instead:
    `centroid` takes one id and `centroids` many, and the same goes for `cell_polygon` and
    `cell_polygons`.
-9. **Store ids as signed 64-bit** (`int64`, DuckDB `BIGINT`, Arrow `int64`). Every id fits a
-   signed int64. Scalar functions accept `np.int64` ids directly.
+9. **Store ids as `int64`** (DuckDB `BIGINT`, Arrow `int64`). Every id is below 2**52, so it is
+   also exact as a float64 and as a JavaScript number in JSON. Scalar functions accept `np.int64`
+   ids directly.
 10. **Ids made before 1.0.0 are not compatible.** That means 0.0.x and the earlier 1.0.1 release,
-    which predates 1.0.0. 1.0.0 moved the grid origin, so an older id still decodes, but to a
-    different place. Regenerate stored ids rather than mixing them.
+    which predates 1.0.0. 1.0.0 moved the grid origin and changed the id layout. Most old ids
+    (every FLAT one, including the `beahiv202` grid) now fail to decode with "reserved bits set",
+    but old POINTY ids with sides under 512 m still decode, to a different place. Regenerate
+    stored ids from their coordinates rather than mixing them.
 
 ## Recipes
 
@@ -185,8 +189,11 @@ column can do that.
 - `ValueError: lonlat=... contradicts the declared CRS`: drop the `lonlat` argument and let the
   container's CRS decide.
 - `ValueError` from `decode`: the id is `INVALID_CELL_ID`, a Morton or foreign id, or corrupt.
-- `TypeError: cell ids must be integers, not floats`: the id column went through float64,
-  usually an int64 column that gained a `NaN`. Keep it `Int64`/Arrow `int64`.
+- `ValueError: size ... is not representable`: the size has more than 3 significant digits.
+- `ValueError: size must be in [3, 999000]`: the size is below the 3 m minimum (6 m for
+  `side_to_side`) or above 999 km. `get_child`/`get_parent` raise this way too when half or double
+  the size isn't a valid size.
+- `ValueError: ... reserved bits set`: usually an id from before the current layout. Regenerate it.
 - `TypeError: a cell size is required`, `... not both`, or `takes N positional arguments`: pass
   exactly one of `side_length=`/`side_to_side=`, by keyword.
 - `ValueError: ... requires a single size / size measure / orientation per call` or `distance

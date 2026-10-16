@@ -18,6 +18,8 @@ from beahiv import (
 from beahiv.cell_id import INVALID_CELL_ID, SIDE_LENGTH_MAX, encode_size
 from beahiv.coords import axial_to_cartesian
 
+from ._sizes import random_size
+
 # Two cells sharing an edge produce a sliver intersection of ~1e-29 of a cell's area out of
 # shapely's floating-point arithmetic. "Overlaps" here means a real, positive-area overlap, so
 # these tests measure against a fraction of the cell's own area rather than against zero.
@@ -29,10 +31,10 @@ def _random_cells(n, seed=0, side_lengths=None):
     for _ in range(n):
         q = rng.randint(-1000, 1000)
         r = rng.randint(-1000, 1000)
-        size = rng.choice(side_lengths) if side_lengths else rng.randint(1, 5000)
         orientation = rng.choice(list(Orientation))
         # both measures, so every property below is checked for side_to_side cells too
         measure = rng.choice(list(SizeMeasure))
+        size = rng.choice(side_lengths) if side_lengths else random_size(rng, measure, upto=5000)
         yield encode_size(q, r, size, measure, orientation)
 
 
@@ -74,7 +76,7 @@ def test_get_child_requires_even_side_length():
 
 
 def test_get_parent_doubles_side_length_and_shares_centroid():
-    for cell_id in _random_cells(200, side_lengths=[2, 4, 50, 202]):
+    for cell_id in _random_cells(200, side_lengths=[12, 24, 50, 202]):
         idx = decode(cell_id)
         parent = get_parent(cell_id)
         if idx.q % 2 != 0 or idx.r % 2 != 0:
@@ -93,7 +95,7 @@ def test_get_parent_doubles_side_length_and_shares_centroid():
 
 
 def test_get_child_halves_side_length_and_shares_centroid():
-    for cell_id in _random_cells(200, seed=1, side_lengths=[2, 4, 50, 202]):
+    for cell_id in _random_cells(200, seed=1, side_lengths=[12, 24, 50, 202]):
         idx = decode(cell_id)
         child = get_child(cell_id)
         child_idx = decode(child)
@@ -108,7 +110,7 @@ def test_get_child_halves_side_length_and_shares_centroid():
 
 
 def test_get_parent_and_get_child_are_inverses_when_both_are_defined():
-    for cell_id in _random_cells(200, seed=2, side_lengths=[2, 4, 50, 202]):
+    for cell_id in _random_cells(200, seed=2, side_lengths=[12, 24, 50, 202]):
         parent = get_parent(cell_id)
         if parent is None:
             continue
@@ -135,18 +137,18 @@ def test_get_parents_returns_two_distinct_straddled_cells_otherwise():
 
 
 def test_get_parents_is_exactly_the_set_of_overlapping_2x_cells():
-    for cell_id in _random_cells(60, seed=3, side_lengths=[2, 50, 200]):
+    for cell_id in _random_cells(60, seed=3, side_lengths=[12, 50, 200]):
         idx = decode(cell_id)
         assert set(get_parents(cell_id)) == _overlapping(cell_id, idx.size * 2)
 
 
 def test_get_parents_cover_the_cell():
-    for cell_id in _random_cells(60, seed=4, side_lengths=[2, 50, 200]):
+    for cell_id in _random_cells(60, seed=4, side_lengths=[12, 50, 200]):
         assert _uncovered_fraction(cell_id, get_parents(cell_id)) <= OVERLAP_TOL
 
 
 def test_get_parents_are_at_2x_side_length_and_the_same_orientation():
-    for cell_id in _random_cells(100, seed=5, side_lengths=[2, 50, 200]):
+    for cell_id in _random_cells(100, seed=5, side_lengths=[12, 50, 200]):
         idx = decode(cell_id)
         for parent in get_parents(cell_id):
             parent_idx = decode(parent)
@@ -168,13 +170,13 @@ def test_get_children_returns_seven_including_the_same_centroid_child():
 
 
 def test_get_children_is_exactly_the_set_of_overlapping_half_size_cells():
-    for cell_id in _random_cells(60, seed=6, side_lengths=[2, 50, 200]):
+    for cell_id in _random_cells(60, seed=6, side_lengths=[12, 50, 200]):
         idx = decode(cell_id)
         assert set(get_children(cell_id)) == _overlapping(cell_id, idx.size // 2)
 
 
 def test_get_children_cover_the_cell_and_overspill_it():
-    for cell_id in _random_cells(30, seed=7, side_lengths=[2, 50, 200]):
+    for cell_id in _random_cells(30, seed=7, side_lengths=[12, 50, 200]):
         children = get_children(cell_id)
         assert _uncovered_fraction(cell_id, children) <= OVERLAP_TOL
 
@@ -237,3 +239,14 @@ def test_overlapping_lookups_on_arrays_skip_invalid_ids(lookup):
     assert lookup([None, INVALID_CELL_ID]).tolist() == []
     with pytest.raises(ValueError):
         lookup(INVALID_CELL_ID)
+
+
+@pytest.mark.parametrize(
+    ("lookup", "size"),
+    [(get_parent, 502), (get_parents, 501), (get_child, 2010), (get_children, 2030), (get_child, 4)],
+)
+def test_lookups_raise_when_the_other_grid_size_is_not_representable(lookup, size):
+    """Sizes have 3 significant digits, so 2x or 0.5x of one need not be a size at all (1004, 1002,
+    1005, 1015), and half the smallest is below the minimum -- there is no grid to look in."""
+    with pytest.raises(ValueError):
+        lookup(encode(0, 0, side_length=size))

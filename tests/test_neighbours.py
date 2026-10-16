@@ -6,13 +6,15 @@ import pytest
 from beahiv import Orientation, SizeMeasure, decode, distance, encode, get_neighbours, k_ring
 from beahiv.neighbours import NEIGHBOUR_OFFSETS
 
+from ._sizes import random_size
+
 
 def _random_origin_cells(n, seed=0):
     rng = random.Random(seed)
     for _ in range(n):
         q = rng.randint(-1000, 1000)
         r = rng.randint(-1000, 1000)
-        side_length = rng.randint(1, 5000)
+        side_length = random_size(rng, upto=5000)
         orientation = rng.choice(list(Orientation))
         yield encode(q, r, side_length=side_length, orientation=orientation)
 

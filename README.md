@@ -158,20 +158,20 @@ area-of-use check.
 
 ### Side length
 
-`side_length` must be a whole number of metres, not an index into a fixed
-resolution table -- unlike H3's 16 discrete resolutions, any integer
-satisfying `1 <= side_length <= 100,000` (`SIDE_LENGTH_MAX` in
-`cell_id.py`) is a valid grid to index against, in either orientation.
-`encode`/`encode_morton` raise `ValueError` outside that range:
-`side_length <= 0` isn't a size, and 100km is where cell sizes stop being
-meaningful units for Great Britain — a hexagon with a 100km side has an
-area of about 26,000km², larger than Wales.
+`side_length` must be a whole number of metres with **at most three
+significant digits**, from **3 m to 999 km** — not an index into a fixed
+resolution table. Unlike H3's 16 discrete resolutions, there are 3,699 valid
+sizes: every whole metre from 3 to 999, then steps of 10 m to 9,990 m, of
+100 m to 99,900 m, and of 1 km to 999 km. So 25 m, 202 m, 1.5 km, 14.5 km and
+500 km are all valid grids, in either orientation; 1,234 m is not (use 1,230
+or 1,240). `encode`/`encode_morton`/`encode_batch` raise `ValueError` for
+anything else.
 
-The cap is deliberately *below* what the 17-bit field could hold
-(`SIDE_LENGTH_MASK`, 131,071), so it is the range check and not the bit
-width that enforces it — an unchecked oversized value would overflow into
-the orientation bit rather than being harmlessly masked off. `encode`,
-`encode_morton` and `encode_batch` all check.
+Both limits come from the bit budget (see "Cell identifiers" below). Three
+significant digits is what lets the size fit 12 bits. The 3 m floor is the
+smallest cell whose q/r still cover the whole National Grid, so a smaller one
+is rejected outright rather than encoding near the origin and raising further
+out. For `side_to_side` the floor is 6 m, a geometric side of at least 3 m.
 
 Two things this does *not* enforce:
 
@@ -210,8 +210,8 @@ beahiv.bng_to_cell(530034, 180381, side_length=200)  # 200m sides
 beahiv.bng_to_cell(530034, 180381, side_to_side=200)  # 200m across, side ~115.5m
 ```
 
-Either way the stored size is a whole number of metres, capped at
-`SIDE_LENGTH_MAX`, and which one it measures is recorded in the cell id
+Either way the stored size follows the same rules (whole metres, three
+significant digits, up to 999 km), and which one it measures is recorded in the cell id
 itself (the measure bit, below) — so everything downstream of an id
 (`decode`, geometry, neighbours, hierarchy) needs no size arguments at all,
 and a side-to-side cell's relatives are side-to-side cells. `CellIndex`
@@ -317,36 +317,53 @@ cell for every point, with no ambiguity at cell boundaries.
 
 ### Cell identifiers
 
-Every cell is a single 64-bit integer, reversible with no lookup table:
+Every cell is a single integer, reversible with no lookup table, and
+always **below `2**52`**:
 
 ```text
-bits 63-62  reserved      2 bits   always zero
-bit 61      measure       1 bit    0 = side length, 1 = side-to-side
-bit 60      orientation   1 bit    0 = POINTY, 1 = FLAT
-bits 59-43  size         17 bits   whole metres, 1..100,000
-bits 42-22  q (offset)   21 bits   q + Q_OFFSET
-bits 21-0   r (offset)   22 bits   r + R_OFFSET
+bits 63-52  reserved     12 bits   always zero
+bit 51      measure       1 bit    0 = side length, 1 = side-to-side
+bit 50      orientation   1 bit    0 = POINTY, 1 = FLAT
+bits 49-38  size         12 bits   2-bit decimal exponent, 10-bit mantissa
+bits 37-19  q (offset)   19 bits   q + Q_OFFSET
+bits 18-0   r (offset)   19 bits   r + R_OFFSET
 ```
 
-The measure bit was carved from what used to be three reserved bits, with
-0 meaning side length, so every id minted before it existed decodes
-unchanged. The two remaining reserved bits sit at the most significant end,
-which means every cell id is below `2**62` and so fits a **signed** 64-bit integer. Every
-array of ids beahiv returns (numpy or Arrow) is `int64`, never `uint64`, so
-consumers can store ids in a plain `BIGINT` column rather than needing an
-unsigned type or a hex string. No `encode` path sets the reserved bits, and
-`decode` *rejects* an id carrying one rather than ignoring it — that
-strictness is what keeps the bits free to be given a meaning later, since a
-decoder that quietly masked unknown bits off could never start honouring one.
+**Why 52 bits.** float64 holds every integer below `2**53` exactly, so an id
+that passes through a float comes back unchanged. That happens all the time
+without anyone asking: pandas turns an `int64` column into `float64` the
+moment it gains a `NaN`, and JavaScript's `JSON.parse` reads every number as
+a double. Under the earlier 64-bit layout such an id came back rounded but
+still well-formed, so it decoded to a valid cell up to hundreds of
+kilometres away, with no error. Now there is nothing to detect: the round
+trip is exact. The ids still go in a plain `int64`/`BIGINT` column; every
+array of ids beahiv returns (numpy or Arrow) is `int64`, never `uint64`.
 
-The size is stored directly as a literal metre value rather than an
-index into a resolution table, so any grid spacing that fits the bit
-budget is usable without registering it anywhere first. q/r are stored
-offset-biased (shifted into an unsigned range) so both fields decode with
-plain arithmetic and no sign handling. 21/22 bits per axial coordinate is
-sized generously: even at a **1 metre** side length — far finer than
-typically needed — the whole British National Grid extent (700km ×
-1300km) indexes fully, in both orientations, with room to spare.
+**Reserved bits.** Only bit 52 may ever be given a meaning; setting any bit
+above it would push ids past `2**53` and bring the problem back. No `encode`
+path sets it, and `decode` *rejects* an id with any reserved bit set rather
+than ignoring it — that strictness is what keeps the bit free to be given a
+meaning later, since a decoder that quietly masked unknown bits off could
+never start honouring one.
+
+**Size.** `mantissa × 10^exponent`, mantissa 1..999 and exponent 0..3 (see
+"Side length" above). Each size has exactly one encoding, the one with the
+smallest exponent, and `decode` rejects the others (500 m as `50 × 10¹`),
+so a cell can't have two ids.
+
+**q/r.** 19 bits each, stored with an offset (`Q_OFFSET`, `R_OFFSET`) so both
+fields decode with plain arithmetic and no sign handling. The offsets aren't
+centred on zero: they put the National Grid box (700 km × 1300 km) near the
+middle of both fields at the 3 m minimum, in both orientations, because GB lies
+entirely north-east of the grid origin. That leaves over 300 km of room beyond
+every edge of the box, even at 3 m.
+
+**Ids from earlier layouts** (0.0.x, and 1.0.x before this layout) are not
+compatible. `decode` rejects every old FLAT id, every old side-to-side id and
+every old POINTY id with a side of 512 m or more, as "reserved bits set". Old
+POINTY side-length ids with smaller sides fall inside the new range and
+decode to a different cell. Regenerate stored ids from their coordinates
+rather than mixing them.
 
 An optional Morton-coded variant (`encode_morton` / `decode_morton`) packs
 the same fields but bit-interleaves q/r for spatial locality, useful for
@@ -446,12 +463,11 @@ Only the scalar functions (`decode`, `cell_polygon`, `centroid`, ...) still
 raise for a bad id. Mixing grids still raises in the batch functions too:
 that is a mistake in the call, not a gap in the data.
 
-Ids must stay integers. A float64 array holds only 53 bits exactly, and a FLAT
-id is above 2**60, so an id that has been through a float is already the wrong
-cell — the batch functions raise `TypeError` for float input rather than
-decode it. The usual way to get one is an int64 column gaining a `NaN`; keep
-nullable ids as pandas `Int64` or Arrow `int64` instead, which are read
-without going through float.
+A float column of ids is fine. Every id is below `2**52`, so one that has
+been through a float64 (an `int64` column that gained a `NaN`, a JSON number)
+is still exact, and decodes to the right cell. `NaN` is a missing row. A float
+that can't be an id (non-integral, infinite, or `2**53` or above) is treated as
+invalid like any other bad row.
 
 The scalar functions take numpy integers as well as `int`, so a single id
 picked out of a batch result (or read from a pandas column, or a DuckDB
@@ -734,7 +750,10 @@ uv run pytest
 Property tests cover:
 
 - **Round trip** — `decode(encode(q, r, s, o)) == (q, r, s, o)` for random
-  and boundary coordinates, including the 1m/full-GB-extent case above.
+  and boundary coordinates, including the corners of the National Grid box
+  at the 3 m minimum, in both orientations.
+- **Float exactness** — every id survives `int(float(id))` unchanged,
+  including the largest the fields allow.
 - **Neighbour symmetry** — if B is a neighbour of A, A is a neighbour of B.
 - **Area equality** — random cells all have identical area, matching
   `A = (3√3/2)s²`, within 1e-9 relative tolerance.

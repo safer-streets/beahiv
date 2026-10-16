@@ -155,16 +155,15 @@ field) should get a directly corresponding test rather than being covered incide
   equivalent but wasn't; `ty` doesn't catch it, only a same-orientation batch-vs-scalar test does.)
 - **Batch functions tolerate missing and invalid cell ids; scalar ones raise.** Every batch
   function taking cell ids goes through `batch._as_cell_id_array` then `decode_batch`, which
-  zeroes any row scalar `decode` would reject (null, `INVALID_CELL_ID`, reserved bits,
-  side_length out of range); `size == 0` is the validity mask downstream. The output
+  zeroes any row scalar `decode` would reject (null, `INVALID_CELL_ID`, reserved bits, an
+  invalid size field); `size == 0` is the validity mask downstream. The output
   carries the gap through rather than raising: NaN centres, `None` geometries, nothing added to
   a `get_parents`/`get_children` union. One bad row shouldn't cost a whole column, and the
   `*_to_cell` functions already turn missing input into `INVALID_CELL_ID` going the other way.
-  Errors in the *call* still raise — mixed grids, float ids. Never `np.asarray` an id column
-  directly: a pandas `Int64` Series or nullable Arrow array holding a null becomes float64,
-  which rounds every FLAT id (all >= 2**60). `_as_cell_id_array` fills nulls via
-  `fillna`/`fill_null` first, and rejects floats rather than decode a rounded id to the wrong
-  cell.
+  Errors in the *call* still raise — mixed grids. Float ids are accepted: every id is below
+  2**52, so a float64 holds it exactly (see the bit-budget item). `_as_cell_id_array` still fills
+  nulls via `fillna`/`fill_null` before numpy sees them, so a nullable integer column stays
+  integer rather than relying on that.
 - **`lonlat_to_cell` and `bng_to_cell` dispatch transparently on scalar vs array-like input.** A plain `int`/`float` takes the pure-Python path (no numpy import); anything else
   (`list`, `np.ndarray`, pandas `Series`, ...) dispatches to the `beahiv.batch` equivalent. This is
   implemented with `@overload` + `numpy.typing.ArrayLike`, not a `float | np.ndarray` union — a
@@ -215,13 +214,15 @@ When reviewing a PR or diff, check:
    coverage of each.
 4. **Bit budget** — any change to `Q_BITS`/`R_BITS`/`SIDE_LENGTH_BITS`/`MEASURE_BITS`/`RESERVED_BITS` in
    `cell_id.py` keeps the 64-bit total exact (there's an `assert` for this — don't relax it) and
-   re-validates the full-GB-extent-at-1m-resolution test in `test_cell_id.py`. Two invariants
-   ride on this layout and each has a test: the reserved bits stay at the most significant end
-   (so every id fits a *signed* int64), and `SIDE_LENGTH_MAX` stays at or below
-   `SIDE_LENGTH_MASK` — side_length is the one field whose limit is a range check rather than
-   its bit width, so an oversized value overflows into the orientation bit instead of being
-   masked off. Every encode path must check it, `encode_batch` included, and every decode path
-   must refuse to read an id carrying one — `cell_id.validate_cell_id` is the shared scalar check
+   re-validates `test_smallest_cell_indexes_the_national_grid` in `test_cell_id.py`.
+   The overriding invariant is that **every id stays below 2**53**, so a float64 holds it exactly
+   (`FLOAT_EXACT_BITS`, asserted, and `test_every_id_is_exact_as_a_float64`). This is what stops
+   an id that goes through pandas or JSON from coming back as a different, valid cell. Never
+   spend a reserved bit above bit 52 to make room for a feature: shrink q/r (raising
+   `SIDE_LENGTH_MIN`) instead. The size field is the one whose bit patterns aren't all valid
+   values (non-canonical encodings, mantissa above 999, below `SIZE_MIN`), so every encode path
+   must go through `cell_id.pack_size`, `encode_batch` included, and every decode path
+   must refuse to read an invalid one — `cell_id.validate_cell_id` is the shared scalar check
    (`decode`, `decode_morton`), which raises, and `decode_batch` mirrors it vectorised, zeroing
    the row instead (see the batch-tolerance rule). The same applies to a non-zero reserved field:
    refusing it is what keeps those bits free to mean something later, so don't relax either path

@@ -7,6 +7,62 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## 52-bit cell ids, exact as float64 (issue #9)
+
+- **Why** — An `int64` id that goes through a float64 (pandas adding a `NaN` to an int column, a
+  JS `JSON.parse`, a merge or reindex) came back rounded but still well-formed. It decoded to a
+  valid cell, up to 185 km away for a 1 km FLAT grid, with no error. Under the 64-bit layout this
+  couldn't be detected, because every q/r bit pattern is valid. #15 only caught floats that reached
+  beahiv, not ones that had already been turned back into ints.
+- **What**
+  - [cell_id.py](src/beahiv/cell_id.py): new layout, every id < 2**52 — reserved 12 (bits 52–63),
+    measure 1, orientation 1, size 12, q 19, r 19. `FLOAT_EXACT_BITS = 53` is asserted against.
+    The size is decimal, mantissa 1..999 × 10^exponent 0..3, so 3 m–999 km in 12 bits
+    (`pack_size`/`unpack_size`, canonical smallest exponent). `SIDE_LENGTH_MIN = 3` is a
+    geometric side, so `SIZE_MIN = (3, 6)` per measure. `SIDE_LENGTH_MAX = 999_000`.
+    `Q_OFFSET`/`R_OFFSET` are 260,000/160,000, not centred on zero.
+  - [morton.py](src/beahiv/morton.py): uses `pack_size`; interleaves 19/19 bits.
+  - [batch.py](src/beahiv/batch.py): `encode_batch` packs the size once. `decode_batch` mirrors
+    `unpack_size`/`SIZE_MIN` vectorised. Float id input is now *accepted*: integral floats below
+    2**53 are exact ids, NaN is missing, and any other float is an invalid row. This replaces #15's
+    `TypeError`.
+  - [hierarchy.py](src/beahiv/hierarchy.py): docs. 2x/0.5x sizes needing a 4th significant digit
+    raise, from `encode`.
+  - Tests: `test_cell_id.py` rewritten for the layout (exhaustive size packing, non-canonical and
+    out-of-range size fields, float exactness, old-layout ids rejected, the National Grid box at
+    the minimum size). New `tests/_sizes.py` draws representable sizes for the random-cell tests.
+    Hierarchy fixtures moved from `[2, 4, ...]` to `[12, 24, ...]`.
+  - README "Side length" and "Cell identifiers" rewritten, batch float paragraph; SKILL size rule,
+    float note, error list, old-ids item; AGENTS bit-budget item and batch-tolerance rule.
+- **Design decisions**
+  - **Make floats harmless rather than detect them.** The alternative was a check bit: bit 0
+    always 1, since every float64 ≥ 2**53 is even. That only turns silent corruption into a loud
+    error. Staying below 2**53 means a pandas or JSON round trip just works, and needs no API.
+    Strings (hex/base64) were rejected too: the user didn't want to complicate the public API, and
+    `int64` keeps the storage, join and Parquet benefits.
+  - **52 bits, not 53**, keeping bit 52 spare. With every bit below 2**53 spent, the next flag
+    (and #10 just needed one) would have to cost float safety or q/r bits. The cost is a 3 m
+    minimum instead of 2 m.
+  - **Decimal 3-significant-digit size** (user's idea) over a smaller cap or a resolution table:
+    it saves 5 bits over the 17-bit metre field and widens the range to 999 km.
+    3,699 sizes. The cost: 1,200 sizes have an unrepresentable double, and 1,200 an
+    unrepresentable half. None of the commonly used sizes are affected.
+  - **Sizes below the minimum are rejected outright**, not left to fail q/r's range check only
+    away from the origin.
+  - **No margin around the National Grid box.** I first fitted the offsets to the box plus 50 km,
+    unprompted; the user questioned it. It never constrained anything: even at 3 m the offsets
+    leave over 300 km of room beyond every edge, so the test and docs now promise just the box.
+  - Bundled into #10's 1.0.0, which already requires regenerating every id (origin move), so
+    users migrate once.
+- **Follow-ups**
+  - Old ids: every old FLAT id (safer-streets-tooling's `beahiv202` grid is FLAT 202 m), every
+    old side-to-side id, and every old POINTY id with a side ≥ 512 m is rejected ("reserved
+    bits"). Old POINTY side-length ids under 512 m still decode, to the wrong cell. Measured:
+    100% of those decode. Spending bit 52 as a "new layout" marker would close most of that gap
+    (leaving old POINTY 512–1023 m), at the cost of the spare bit. Not done; the user's call.
+  - The R port still has the old layout.
+  - safer-streets-tooling: its 202 m grid is representable, but any stored ids must be regenerated.
+
 ## Batch functions tolerate missing/invalid cell ids
 
 - **Why** — `cell_polygons` on a nullable id column (pandas `Int64` with `<NA>`, via DuckDB)

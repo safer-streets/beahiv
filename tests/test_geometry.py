@@ -4,10 +4,11 @@ import random
 import numpy as np
 import pytest
 
-from beahiv import INVALID_CELL_ID, Orientation, cell_polygon, cell_polygons, centroid, centroids, encode
+from beahiv import INVALID_CELL_ID, Orientation, SizeMeasure, cell_polygon, cell_polygons, centroid, centroids, encode
 from beahiv.coords import ORIGIN_X, ORIGIN_Y, cartesian_to_axial
 
 from ._geom_helpers import hex_area, point_in_polygon_with_tolerance, polygon_area
+from ._sizes import random_size
 
 RELATIVE_TOLERANCE = 1e-9
 
@@ -21,7 +22,7 @@ def _vertices(polygon) -> list[tuple[float, float]]:
 def test_area_is_constant_and_matches_formula():
     rng = random.Random(0)
     for orientation in Orientation:
-        side_length = rng.randint(1, 100_000)
+        side_length = random_size(rng)
         expected = hex_area(side_length)
         for _ in range(200):
             q = rng.randint(-10_000, 10_000)
@@ -36,7 +37,7 @@ def test_coordinate_stability_point_falls_within_returned_polygon():
     for _ in range(500):
         x = rng.uniform(0, 700_000)
         y = rng.uniform(0, 1_300_000)
-        side_length = rng.randint(10, 5000)
+        side_length = random_size(rng, upto=5000)
         orientation = rng.choice(list(Orientation))
 
         q, r = cartesian_to_axial(x, y, side_length, orientation)
@@ -51,7 +52,7 @@ def test_coordinate_stability_point_falls_within_returned_polygon():
 def test_cell_polygons_matches_scalar_cell_polygon():
     rng = random.Random(7)
     for orientation in Orientation:
-        side_length = rng.randint(1, 100_000)
+        side_length = random_size(rng)
         cell_ids = [
             encode(
                 rng.randint(-10_000, 10_000),
@@ -130,7 +131,7 @@ def test_side_to_side_polygon_has_that_distance_between_parallel_sides():
     rng = random.Random(3)
     for orientation in Orientation:
         for _ in range(100):
-            d = rng.randint(1, 100_000)
+            d = random_size(rng, SizeMeasure.SIDE_TO_SIDE)
             cell_id = encode(
                 rng.randint(-10_000, 10_000), rng.randint(-10_000, 10_000), orientation=orientation, side_to_side=d
             )
