@@ -1,4 +1,10 @@
-"""Optional Morton (Z-order) cell id variant.
+"""Morton (Z-order) cell id variant -- internal, not part of the public API yet.
+
+Not exported from `beahiv`: nothing in a Morton id marks it as one, so `decode` (and everything
+built on it -- geometry, neighbours, hierarchy, batch) silently reads one as a different, valid
+cell. It becomes public once the reserved bit 52 flags Morton ids, so `decode` can tell them apart
+(see the cell_id module docstring and README "Future enhancements"). Until then it is kept, and
+tested, so that work starts from a known-good encoding.
 
 Same bit budget and same (measure, orientation, size) prefix as the plain
 id in cell_id.py, but q/r occupy an interleaved 38-bit region instead of
@@ -28,7 +34,7 @@ from .cell_id import (
     resolve_size,
     validate_cell_id,
 )
-from .measure import SizeMeasure
+from .measure import Measure
 from .orientation import Orientation
 
 _MORTON_BITS = Q_BITS + R_BITS
@@ -61,14 +67,14 @@ def encode_morton(
     q: SupportsIndex,
     r: SupportsIndex,
     *,
-    side_length: SupportsIndex | None = None,
-    side_to_side: SupportsIndex | None = None,
+    size: SupportsIndex,
+    measure: Measure,
     orientation: Orientation = Orientation.FLAT,
 ) -> int:
-    """Morton-ordered `encode`: the same arguments, including exactly one of side_length/side_to_side."""
+    """Morton-ordered `encode`: the same arguments, including the required size and measure."""
     q = index(q)
     r = index(r)
-    size, measure = resolve_size(side_length, side_to_side)
+    size, measure = resolve_size(size, measure)
     size_field = pack_size(size, measure)
 
     q_enc = q + Q_OFFSET
@@ -98,7 +104,7 @@ def decode_morton(cell_id: SupportsIndex) -> CellIndex:
     cell_id, size = validate_cell_id(cell_id)
 
     orientation = Orientation((cell_id >> ORIENTATION_SHIFT) & ORIENTATION_MASK)
-    measure = SizeMeasure((cell_id >> MEASURE_SHIFT) & MEASURE_MASK)
+    measure = Measure((cell_id >> MEASURE_SHIFT) & MEASURE_MASK)
     morton = cell_id & _MORTON_MASK
 
     q_enc, r_enc = _deinterleave(morton, Q_BITS, R_BITS)

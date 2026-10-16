@@ -5,8 +5,8 @@ import pytest
 from shapely.ops import unary_union
 
 from beahiv import (
+    Measure,
     Orientation,
-    SizeMeasure,
     cell_polygon,
     decode,
     encode,
@@ -32,8 +32,8 @@ def _random_cells(n, seed=0, side_lengths=None):
         q = rng.randint(-1000, 1000)
         r = rng.randint(-1000, 1000)
         orientation = rng.choice(list(Orientation))
-        # both measures, so every property below is checked for side_to_side cells too
-        measure = rng.choice(list(SizeMeasure))
+        # both measures, so every property below is checked for EDGE_TO_EDGE cells too
+        measure = rng.choice(list(Measure))
         size = rng.choice(side_lengths) if side_lengths else random_size(rng, measure, upto=5000)
         yield encode_size(q, r, size, measure, orientation)
 
@@ -64,15 +64,15 @@ def _uncovered_fraction(cell_id, cell_ids):
 
 
 def test_get_parent_requires_even_q_and_r():
-    assert get_parent(encode(4, -6, side_length=100)) is not None
+    assert get_parent(encode(4, -6, size=100, measure=Measure.EDGE_LENGTH)) is not None
     for q, r in [(3, -6), (4, -5), (3, -5)]:
-        assert get_parent(encode(q, r, side_length=100)) is None
+        assert get_parent(encode(q, r, size=100, measure=Measure.EDGE_LENGTH)) is None
 
 
 def test_get_child_requires_even_side_length():
-    get_child(encode(0, 0, side_length=100))  # doesn't raise
+    get_child(encode(0, 0, size=100, measure=Measure.EDGE_LENGTH))  # doesn't raise
     with pytest.raises(ValueError):
-        get_child(encode(0, 0, side_length=101))
+        get_child(encode(0, 0, size=101, measure=Measure.EDGE_LENGTH))
 
 
 def test_get_parent_doubles_side_length_and_shares_centroid():
@@ -119,20 +119,20 @@ def test_get_parent_and_get_child_are_inverses_when_both_are_defined():
 
 def test_get_parent_rejects_side_length_that_would_exceed_the_cap():
     with pytest.raises(ValueError):
-        get_parent(encode(0, 0, side_length=SIDE_LENGTH_MAX))
+        get_parent(encode(0, 0, size=SIDE_LENGTH_MAX, measure=Measure.EDGE_LENGTH))
 
 
 # --- get_parents / get_children: every overlapping cell -------------------------------------
 
 
 def test_get_parents_returns_the_containing_cell_alone_when_q_and_r_are_even():
-    cell_id = encode(4, -6, side_length=100)
+    cell_id = encode(4, -6, size=100, measure=Measure.EDGE_LENGTH)
     assert get_parents(cell_id) == (get_parent(cell_id),)
 
 
 def test_get_parents_returns_two_distinct_straddled_cells_otherwise():
     for q, r in [(3, -6), (4, -5), (3, -5)]:
-        parents = get_parents(encode(q, r, side_length=100))
+        parents = get_parents(encode(q, r, size=100, measure=Measure.EDGE_LENGTH))
         assert len(set(parents)) == 2
 
 
@@ -159,11 +159,11 @@ def test_get_parents_are_at_2x_side_length_and_the_same_orientation():
 
 def test_get_parents_rejects_side_length_that_would_exceed_the_cap():
     with pytest.raises(ValueError):
-        get_parents(encode(3, -6, side_length=SIDE_LENGTH_MAX))
+        get_parents(encode(3, -6, size=SIDE_LENGTH_MAX, measure=Measure.EDGE_LENGTH))
 
 
 def test_get_children_returns_seven_including_the_same_centroid_child():
-    cell_id = encode(4, -6, side_length=100)
+    cell_id = encode(4, -6, size=100, measure=Measure.EDGE_LENGTH)
     children = get_children(cell_id)
     assert len(set(children)) == 7
     assert get_child(cell_id) in children
@@ -187,13 +187,13 @@ def test_get_children_cover_the_cell_and_overspill_it():
 
 
 def test_get_children_requires_even_side_length():
-    get_children(encode(0, 0, side_length=100))  # doesn't raise
+    get_children(encode(0, 0, size=100, measure=Measure.EDGE_LENGTH))  # doesn't raise
     with pytest.raises(ValueError):
-        get_children(encode(0, 0, side_length=101))
+        get_children(encode(0, 0, size=101, measure=Measure.EDGE_LENGTH))
 
 
 def test_lookups_accept_numpy_integer_ids():
-    cell_id = encode(4, -6, side_length=100)
+    cell_id = encode(4, -6, size=100, measure=Measure.EDGE_LENGTH)
 
     assert get_parent(np.int64(cell_id)) == get_parent(cell_id)
     assert get_parents(np.int64(cell_id)) == get_parents(cell_id)
@@ -204,14 +204,26 @@ def test_lookups_accept_numpy_integer_ids():
 @pytest.mark.parametrize("lookup", [get_parent, get_child])
 def test_same_centroid_lookups_are_scalar_only(lookup):
     with pytest.raises(TypeError):
-        lookup(np.array([encode(4, -6, side_length=100), encode(0, 0, side_length=100)], dtype=np.uint64))
+        lookup(
+            np.array(
+                [
+                    encode(4, -6, size=100, measure=Measure.EDGE_LENGTH),
+                    encode(0, 0, size=100, measure=Measure.EDGE_LENGTH),
+                ],
+                dtype=np.uint64,
+            )
+        )
 
 
 @pytest.mark.parametrize("lookup", [get_parents, get_children])
 def test_overlapping_lookups_on_arrays_return_the_deduplicated_union(lookup):
     # Adjacent cells share parents and children, so the union is smaller than the sum.
     cell_ids = np.array(
-        [encode(4, -6, side_length=100), encode(3, -6, side_length=100), encode(2, -6, side_length=100)],
+        [
+            encode(4, -6, size=100, measure=Measure.EDGE_LENGTH),
+            encode(3, -6, size=100, measure=Measure.EDGE_LENGTH),
+            encode(2, -6, size=100, measure=Measure.EDGE_LENGTH),
+        ],
         dtype=np.uint64,
     )
     expected = sorted(set().union(*(lookup(cell_id) for cell_id in cell_ids)))
@@ -233,7 +245,7 @@ def test_overlapping_lookups_on_arrays_return_the_deduplicated_union(lookup):
 @pytest.mark.parametrize("lookup", [get_parents, get_children])
 def test_overlapping_lookups_on_arrays_skip_invalid_ids(lookup):
     """An array's bad ids add nothing to the union; a scalar bad id still raises, from decode."""
-    cell_id = encode(4, -6, side_length=100)
+    cell_id = encode(4, -6, size=100, measure=Measure.EDGE_LENGTH)
 
     assert lookup([None, cell_id, INVALID_CELL_ID]).tolist() == sorted(lookup(cell_id))
     assert lookup([None, INVALID_CELL_ID]).tolist() == []
@@ -245,7 +257,7 @@ def test_overlapping_lookups_on_arrays_skip_invalid_ids(lookup):
 def test_lookups_work_across_the_whole_size_range(size):
     """Sizes are binary floats, so 2x and 0.5x of a size are sizes too -- including either side of
     the 1023m boundary where they stop being every whole metre."""
-    cell_id = encode(4, -6, side_length=size)
+    cell_id = encode(4, -6, size=size, measure=Measure.EDGE_LENGTH)
     assert decode(get_parents(cell_id)[0]).size == 2 * size
     if size % 2 == 0:  # an odd size has no 0.5x grid, binary or not
         assert decode(get_children(cell_id)[0]).size == size // 2
@@ -258,4 +270,4 @@ def test_lookups_work_across_the_whole_size_range(size):
 def test_lookups_raise_when_the_other_grid_is_out_of_range(lookup, size):
     """Past SIDE_LENGTH_MAX, below the minimum, or (as ever) an odd size: no grid to look in."""
     with pytest.raises(ValueError):
-        lookup(encode(0, 0, side_length=size))
+        lookup(encode(0, 0, size=size, measure=Measure.EDGE_LENGTH))

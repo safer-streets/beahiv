@@ -8,15 +8,15 @@ checks that function rather than echoing it.
 
 import random
 
-from beahiv import SizeMeasure
+from beahiv import Measure
 from beahiv.cell_id import SIZE_MIN
 
 REPRESENTABLE_SIZES = sorted({significand << shift for significand in range(1, 1024) for shift in range(7)})
 
 
-def sizes(measure: SizeMeasure = SizeMeasure.SIDE_LENGTH, upto: int | None = None) -> list[int]:
+def sizes(measure: Measure = Measure.EDGE_LENGTH, upto: int | None = None) -> list[int]:
     return [s for s in REPRESENTABLE_SIZES if s >= SIZE_MIN[measure] and (upto is None or s <= upto)]
 
 
-def random_size(rng: random.Random, measure: SizeMeasure = SizeMeasure.SIDE_LENGTH, upto: int | None = None) -> int:
+def random_size(rng: random.Random, measure: Measure = Measure.EDGE_LENGTH, upto: int | None = None) -> int:
     return rng.choice(sizes(measure, upto))

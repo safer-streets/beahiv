@@ -17,11 +17,11 @@ The library is small enough to read in full; do that before extending it. Key mo
 | File | Role |
 | ---- | ---- |
 | [orientation.py](src/beahiv/orientation.py) | `Orientation` enum (POINTY/FLAT) — see the "Orientation" gotcha below |
-| [measure.py](src/beahiv/measure.py) | `SizeMeasure` enum (SIDE_LENGTH/SIDE_TO_SIDE) — what a cell's stored size measures |
+| [measure.py](src/beahiv/measure.py) | `Measure` enum (EDGE_LENGTH/EDGE_TO_EDGE) — what a cell's `size` measures |
 | [coords.py](src/beahiv/coords.py) | Scalar axial ↔ Cartesian (EPSG:27700 metres) conversion, cube-coordinate rounding; the grid origin (`ORIGIN_X`/`ORIGIN_Y`) and `side_length_of` |
 | [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex`; `resolve_size`/`encode_size` for the size arguments |
 | [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (array input gives the deduplicated union) |
-| [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
+| [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality. **Internal, not exported** until bit 52 flags Morton ids (README "Future enhancements"); don't re-export it before then |
 | [geo.py](src/beahiv/geo.py) | Public geographic interface: `lonlat_to_cell`, `bng_to_cell` (WGS84 ↔ EPSG:27700 ↔ cell id), plus `_cell_centre`, the scalar centre lookup behind `geometry.centroid` |
 | [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry, nothing stored: `cell_polygon`/`cell_polygons` → Shapely `Polygon`(s), `centroid`/`centroids` → Shapely `Point`(s) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
@@ -130,17 +130,21 @@ field) should get a directly corresponding test rather than being covered incide
   *different physical point* under each orientation, and the two only agree at `(0, 0)`. Never
   compare, reuse, or mix `q`/`r` (or cell ids) across orientations. See the docstrings in
   [coords.py](src/beahiv/coords.py) and [orientation.py](src/beahiv/orientation.py).
-- **Cell size is `side_length=` *or* `side_to_side=`, never both, and the id records which.** Every
+- **Cell size is `size=` plus a required `measure=`, and the id records the measure.** Every
   public size-taking function takes the pair — plus `orientation`, and `predicate` where there is
-  one — as keyword-only arguments (`f(x, y, *, side_length=None, side_to_side=None,
-  orientation=...)`), so no call can pass a bare number whose measure is implicit; don't add a
-  positional form back. It funnels them through `cell_id.resolve_size` → `(size, SizeMeasure)`. From there, keep the two
+  one — as keyword-only arguments (`f(x, y, *, size, measure, orientation=...)`), so no call can
+  pass a number whose measure is implicit. Don't add a positional form back, and don't give
+  `measure` a default: `size=200` alone would silently mean one lattice. The one exception is
+  `resize_cell`, whose `measure=None` means the source cell's own (known, not implied), like its
+  `orientation=None`. It funnels them through `cell_id.resolve_size` → `(int, Measure)`, which
+  insists on a real `Measure` member: `Measure` and `Orientation` are both 0/1 IntEnums, so
+  `Measure(x)` would accept `1` or `Orientation.FLAT` without complaint. From there, keep the two
   kinds of "size" apart: the stored integer (`CellIndex.size`, `encode_size`) is what encoding and
   hierarchy arithmetic (`* 2`, `// 2`, parity) use; the geometric side (`CellIndex.side_length`,
   `coords.side_length_of`, possibly irrational) is the only thing to pass to
   `axial_to_cartesian`/`cartesian_to_axial` or vertex maths. Code holding a decoded `CellIndex`
   re-encodes via `encode_size(q, r, idx.size, idx.measure, idx.orientation)` so the measure is carried, not re-decided. Like
-  orientation, SIDE_LENGTH and SIDE_TO_SIDE at the same number are different lattices.
+  orientation, EDGE_LENGTH and EDGE_TO_EDGE at the same number are different lattices.
 - **The grid origin is `coords.ORIGIN_X`/`ORIGIN_Y`, and nowhere else.**
   `axial_to_cartesian`/`cartesian_to_axial` and their batch mirrors add/subtract it, and nothing
   else should apply an offset of its own — every other module reaches Cartesian space through
@@ -298,11 +302,11 @@ src/
   beahiv/
     __init__.py       # public API surface (__all__) -- keep in sync with what's exported
     orientation.py     # Orientation enum (POINTY/FLAT)
-    measure.py         # SizeMeasure enum (SIDE_LENGTH/SIDE_TO_SIDE)
+    measure.py         # Measure enum (EDGE_LENGTH/EDGE_TO_EDGE)
     coords.py          # scalar axial <-> Cartesian conversion
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
     hierarchy.py        # get_parent(s) / get_child(ren) -- 2x/0.5x side_length: same-centroid (singular) or overlapping (plural)
-    morton.py          # Z-order variant of encode/decode
+    morton.py          # Z-order variant of encode/decode -- internal until bit 52 flags Morton ids
     geo.py             # WGS84 <-> EPSG:27700 <-> cell id (lonlat_to_cell, bng_to_cell)
     geometry.py         # cell_polygon(s) -> Polygon(s), centroid(s) -> Point(s), generated on demand (needs Shapely)
     neighbours.py       # get_neighbours, distance, k_ring

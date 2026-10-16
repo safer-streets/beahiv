@@ -15,7 +15,7 @@ cell.
 
 import math
 
-from .measure import SizeMeasure
+from .measure import Measure
 from .orientation import Orientation
 
 SQRT3 = math.sqrt(3.0)
@@ -30,9 +30,9 @@ ORIGIN_X = 875 / SQRT3
 ORIGIN_Y = 700 / 3
 
 
-def side_length_of(size: int, measure: SizeMeasure) -> float:
+def side_length_of(size: int, measure: Measure) -> float:
     """Return the geometric side length of a cell whose stored size is `size` under `measure`."""
-    if measure == SizeMeasure.SIDE_TO_SIDE:
+    if measure == Measure.EDGE_TO_EDGE:
         return size / SQRT3
     return size
 
@@ -45,7 +45,7 @@ def axial_to_cartesian(
 ) -> tuple[float, float]:
     """Return the (x, y) centre of hex (q, r) in the same units as side_length.
 
-    `side_length` is the geometric one -- see `side_length_of` for a SIDE_TO_SIDE cell.
+    `side_length` is the geometric one -- see `side_length_of` for an EDGE_TO_EDGE cell.
     """
     s = side_length
     if orientation == Orientation.POINTY:

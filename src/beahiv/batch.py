@@ -37,7 +37,7 @@ from .cell_id import (
     resolve_size,
 )
 from .coords import ORIGIN_X, ORIGIN_Y, SQRT3, side_length_of
-from .measure import SizeMeasure
+from .measure import Measure
 from .orientation import Orientation
 
 # A column of cell ids, as the batch decoders take it. ArrayLike alone has no room for a None among
@@ -129,17 +129,17 @@ def encode_batch(
     q: np.ndarray,
     r: np.ndarray,
     *,
-    side_length: int | None = None,
-    side_to_side: int | None = None,
+    size: int,
+    measure: Measure,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode axial coordinates into int64 cell ids -- see `cell_id.encode` for the layout.
 
-    Give exactly one of `side_length` / `side_to_side`, as for `cell_id.encode`.
+    `size` and `measure` are required, as for `cell_id.encode`.
     """
     q = np.asarray(q, dtype=np.int64)
     r = np.asarray(r, dtype=np.int64)
-    size, measure = resolve_size(side_length, side_to_side)
+    size, measure = resolve_size(size, measure)
     # one scalar size for the whole call, so it is packed (and validated) once, not per row
     size_field = pack_size(size, measure)
 
@@ -220,7 +220,7 @@ def decode_batch(
     """Return (q, r, size, measure, orientation) arrays for a batch of cell ids.
 
     `size` is the stored field, as `CellIndex.size` -- *not* the geometric side length when the
-    measure is SIDE_TO_SIDE (see `coords.side_length_of`).
+    measure is EDGE_TO_EDGE (see `coords.side_length_of`).
 
     Unlike scalar `decode`, a bad row doesn't raise: every id `decode` would reject (see
     `cell_id.validate_cell_id`) -- INVALID_CELL_ID, a missing value, reserved bits set, an invalid
@@ -252,17 +252,17 @@ def lonlat_to_cell_batch(
     lons: ArrayLike,
     lats: ArrayLike,
     *,
-    side_length: int | None = None,
-    side_to_side: int | None = None,
+    size: int,
+    measure: Measure,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode each WGS84 (lon, lat) pair; NaN coordinates map to INVALID_CELL_ID.
 
-    Give exactly one of `side_length` / `side_to_side`, as for `cell_id.encode`.
+    `size` and `measure` are required, as for `cell_id.encode`.
 
     Raises if any non-NaN pair is outside EPSG:27700's area of use -- see `geo.lonlat_to_cell`.
     """
-    s = side_length_of(*resolve_size(side_length, side_to_side))
+    s = side_length_of(*resolve_size(size, measure))
     lons = np.asarray(lons, dtype=np.float64)
     lats = np.asarray(lats, dtype=np.float64)
     valid = ~(np.isnan(lons) | np.isnan(lats))
@@ -272,9 +272,7 @@ def lonlat_to_cell_batch(
     if np.any(valid):
         x, y = _TO_BNG.transform(lons[valid], lats[valid])
         q, r = cartesian_to_axial_batch(x, y, s, orientation)
-        cell_ids[valid] = encode_batch(
-            q, r, side_length=side_length, orientation=orientation, side_to_side=side_to_side
-        )
+        cell_ids[valid] = encode_batch(q, r, size=size, measure=measure, orientation=orientation)
     return cell_ids
 
 
@@ -286,20 +284,20 @@ def latlon_to_cell_batch(
     lats: ArrayLike,
     lons: ArrayLike,
     *,
-    side_length: int | None = None,
-    side_to_side: int | None = None,
+    size: int,
+    measure: Measure,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Deprecated: use `lonlat_to_cell_batch(lons, lats, ...)` -- note the swapped argument order."""
-    return lonlat_to_cell_batch(lons, lats, side_length=side_length, side_to_side=side_to_side, orientation=orientation)
+    return lonlat_to_cell_batch(lons, lats, size=size, measure=measure, orientation=orientation)
 
 
 def bng_to_cell_batch(
     x: ArrayLike,
     y: ArrayLike,
     *,
-    side_length: int | None = None,
-    side_to_side: int | None = None,
+    size: int,
+    measure: Measure,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode each EPSG:27700 (x, y) pair; NaN coordinates map to INVALID_CELL_ID.
@@ -308,9 +306,9 @@ def bng_to_cell_batch(
     coordinate far outside GB is simply a cell far from the origin — and one far enough to exceed
     the q/r bit budget is rejected by ``encode_batch`` rather than wrapping silently.
 
-    Give exactly one of `side_length` / `side_to_side`, as for `cell_id.encode`.
+    `size` and `measure` are required, as for `cell_id.encode`.
     """
-    s = side_length_of(*resolve_size(side_length, side_to_side))
+    s = side_length_of(*resolve_size(size, measure))
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     valid = ~(np.isnan(x) | np.isnan(y))
@@ -318,9 +316,7 @@ def bng_to_cell_batch(
     cell_ids = np.full(x.shape, INVALID_CELL_ID, dtype=np.int64)
     if np.any(valid):
         q, r = cartesian_to_axial_batch(x[valid], y[valid], s, orientation)
-        cell_ids[valid] = encode_batch(
-            q, r, side_length=side_length, orientation=orientation, side_to_side=side_to_side
-        )
+        cell_ids[valid] = encode_batch(q, r, size=size, measure=measure, orientation=orientation)
     return cell_ids
 
 
@@ -347,7 +343,7 @@ def _cell_centres(cell_ids: CellIdsLike) -> tuple[np.ndarray, np.ndarray, float,
     y = np.full(q.shape, np.nan)
     if not len(sizes):
         return x, y, 0.0, Orientation.FLAT
-    s = side_length_of(int(sizes[0]), SizeMeasure(int(measures[0])))
+    s = side_length_of(int(sizes[0]), Measure(int(measures[0])))
     grid_orientation = Orientation(int(orientations[0]))
     x[valid], y[valid] = axial_to_cartesian_batch(q[valid], r[valid], s, grid_orientation)
     return x, y, s, grid_orientation

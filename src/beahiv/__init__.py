@@ -5,8 +5,7 @@ from .cell_id import INVALID_CELL_ID, CellIndex, decode, encode
 from .geo import bng_to_cell, latlon_to_cell, lonlat_to_cell  # ty: ignore[deprecated] -- kept exported until removal
 from .geometry import cell_polygon, cell_polygons, centroid, centroids
 from .hierarchy import get_child, get_children, get_parent, get_parents
-from .measure import SizeMeasure
-from .morton import decode_morton, encode_morton
+from .measure import Measure
 from .neighbours import NEIGHBOUR_OFFSETS, distance, get_neighbours, k_ring
 from .orientation import Orientation
 from .points import point_to_cell
@@ -14,7 +13,7 @@ from .polyfill import bbox_fill, polyfill, resize_cell
 
 __all__ = [
     "Orientation",
-    "SizeMeasure",
+    "Measure",
     "CellIndex",
     "encode",
     "decode",
@@ -35,8 +34,6 @@ __all__ = [
     "centroids",
     "bng_to_cell",
     "point_to_cell",
-    "encode_morton",
-    "decode_morton",
     "polyfill",
     "bbox_fill",
     "resize_cell",

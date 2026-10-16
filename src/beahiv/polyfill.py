@@ -15,6 +15,7 @@ from shapely.geometry.base import BaseGeometry
 from .cell_id import decode, encode_size, resolve_size
 from .coords import axial_to_cartesian, cartesian_to_axial, side_length_of
 from .geometry import cell_polygon
+from .measure import Measure
 from .orientation import Orientation
 
 _PREDICATES = ("overlap", "centre", "center", "full")
@@ -49,14 +50,14 @@ def _axial_bounds(
 def polyfill(
     polygon: BaseGeometry,
     *,
-    side_length: int | None = None,
-    side_to_side: int | None = None,
+    size: int,
+    measure: Measure,
     orientation: Orientation = Orientation.FLAT,
     predicate: str = "overlap",
 ) -> list[int]:
     """Return the ids of every (size, orientation) hex cell covering `polygon`.
 
-    Give exactly one of `side_length` / `side_to_side`, as for `latlon_to_cell`.
+    `size` and `measure` are required, as for `lonlat_to_cell`.
 
     `polygon` is a Shapely `Polygon`/`MultiPolygon` in EPSG:27700 metres --
     beahiv's native CRS, so no reprojection happens here.
@@ -67,7 +68,7 @@ def polyfill(
       - "center": the hex's centre falls inside the polygon
       - "full": the hex lies entirely inside the polygon
     """
-    size, measure = resolve_size(side_length, side_to_side)
+    size, measure = resolve_size(size, measure)
     if predicate not in _PREDICATES:
         raise ValueError(f"predicate must be one of {_PREDICATES}, got {predicate!r}")
     if polygon.is_empty:
@@ -98,8 +99,8 @@ def bbox_fill(
     maxx: float,
     maxy: float,
     *,
-    side_length: int | None = None,
-    side_to_side: int | None = None,
+    size: int,
+    measure: Measure,
     orientation: Orientation = Orientation.FLAT,
     predicate: str = "overlap",
 ) -> list[int]:
@@ -112,44 +113,44 @@ def bbox_fill(
     """
     return polyfill(
         box(minx, miny, maxx, maxy),
-        side_length=side_length,
+        size=size,
+        measure=measure,
         orientation=orientation,
         predicate=predicate,
-        side_to_side=side_to_side,
     )
 
 
 def resize_cell(
     cell_id: SupportsIndex,
     *,
-    new_side_length: int | None = None,
-    new_side_to_side: int | None = None,
+    size: int,
+    measure: Measure | None = None,
     orientation: Orientation | None = None,
     predicate: str = "centre",
 ) -> list[int]:
-    """Return the ids of every new-size cell covering the hexagon `cell_id` spans.
-
-    Give exactly one of `new_side_length` / `new_side_to_side`. Either may be used whatever
-    `cell_id`'s own measure is -- the covering is purely geometric.
+    """Return the ids of every `size`-metre cell covering the hexagon `cell_id` spans.
 
     A thin convenience wrapper around `polyfill`, seeded by `cell_polygon(cell_id)` instead of an
-    arbitrary polygon -- same `predicate` semantics. `new_side_length` may be smaller (a
-    finer-grained covering, the useful replacement for a same-centroid "children" lookup) or larger
-    (a coarser covering -- including the trivial case of finding the one coarser cell containing
-    this one) than `cell_id`'s own `side_length`; both directions are ordinary `polyfill` calls,
-    nothing here assumes one is bigger than the other.
+    arbitrary polygon -- same `predicate` semantics. `size` may be smaller (a finer-grained
+    covering, the useful replacement for a same-centroid "children" lookup) or larger (a coarser
+    covering -- including the trivial case of finding the one coarser cell containing this one)
+    than `cell_id`'s own size; both directions are ordinary `polyfill` calls, nothing here assumes
+    one is bigger than the other.
 
-    `orientation` defaults to `cell_id`'s own orientation -- the common case of resizing within the
-    same grid family -- but can be overridden to cover the cell with a grid of the other
-    orientation instead.
+    `measure` and `orientation` default to `cell_id`'s own -- the common case of resizing within
+    the same grid family, where unlike everywhere else the measure is known rather than implied --
+    but either can be overridden to cover the cell with a different family's grid instead. The
+    covering is purely geometric, so any combination works.
     """
     idx = decode(cell_id)
+    if measure is None:
+        measure = idx.measure
     if orientation is None:
         orientation = idx.orientation
     return polyfill(
         cell_polygon(cell_id),
-        side_length=new_side_length,
+        size=size,
+        measure=measure,
         orientation=orientation,
         predicate=predicate,
-        side_to_side=new_side_to_side,
     )

@@ -4,7 +4,7 @@ import random
 import numpy as np
 import pytest
 
-from beahiv import Orientation, SizeMeasure
+from beahiv import Measure, Orientation
 from beahiv.batch import axial_to_cartesian_batch, cartesian_to_axial_batch
 from beahiv.coords import ORIGIN_X, ORIGIN_Y, axial_to_cartesian, cartesian_to_axial, side_length_of
 
@@ -34,6 +34,6 @@ def test_cartesian_to_axial_inverts_axial_to_cartesian():
 
 
 def test_side_length_of():
-    assert side_length_of(200, SizeMeasure.SIDE_LENGTH) == 200
+    assert side_length_of(200, Measure.EDGE_LENGTH) == 200
     # a regular hexagon's parallel sides are sqrt(3) side lengths apart
-    assert side_length_of(200, SizeMeasure.SIDE_TO_SIDE) * math.sqrt(3) == pytest.approx(200, rel=1e-15)
+    assert side_length_of(200, Measure.EDGE_TO_EDGE) * math.sqrt(3) == pytest.approx(200, rel=1e-15)

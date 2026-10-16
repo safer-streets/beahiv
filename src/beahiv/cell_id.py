@@ -2,8 +2,9 @@
 
 Bit layout (MSB to LSB)::
 
-    [63..52]  reserved     12 bits  (always zero)
-    [51]      measure       1 bit   (see SizeMeasure)
+    [63..53]  reserved     11 bits  (always zero, permanently -- see FLOAT_EXACT_BITS)
+    [52]      reserved      1 bit   (zero for now; kept for future use, likely a Morton flag)
+    [51]      measure       1 bit   (see Measure)
     [50]      orientation   1 bit   (see Orientation)
     [49..38]  size         12 bits  (3-bit binary exponent, 9-bit mantissa)
     [37..19]  q_enc        19 bits  (q + Q_OFFSET)
@@ -20,9 +21,10 @@ nothing to say so. Below 2**53 the round trip is exact, so there is nothing to d
 Of the reserved bits, only bit 52 may ever be given a meaning: an id that sets any bit above it is
 no longer exact as a float, which would bring the problem straight back (see FLOAT_EXACT_BITS).
 Until then `encode` never sets it and `decode` refuses an id that has it set, which is what keeps it
-free -- a decoder that ignored unknown bits could never start honouring one. Morton and plain ids
-are still indistinguishable, so decoding one with the wrong function yields wrong q/r rather than
-an error; the spare bit is the obvious candidate if that ever needs fixing.
+free -- a decoder that ignored unknown bits could never start honouring one. Its likely use is a
+Morton flag: Morton and plain ids are still indistinguishable, so decoding one with the wrong
+function yields wrong q/r rather than an error, and setting bit 52 on Morton ids would let `decode`
+tell them apart.
 
 The size is a whole number of metres stored as a small binary float, the way IEEE 754 does it:
 exponent 0 holds the mantissa as-is (0..511 metres, the "subnormal" range), and exponent e >= 1 holds
@@ -39,8 +41,8 @@ in range. A decimal three-significant-digit field, tried first, broke that for 1
 there are no non-canonical patterns to reject -- only a size below SIZE_MIN.
 
 The measure bit says what the size measures: the length of a side (0) or the distance between two
-parallel sides (1). Callers choose with the mutually exclusive `side_length` / `side_to_side`
-arguments (see `resolve_size`).
+parallel sides (1) -- `Measure.EDGE_LENGTH` or `Measure.EDGE_TO_EDGE`. Callers always name it, with the
+required `measure=` argument that accompanies every `size=` (see `resolve_size`).
 
 q/r get 19 bits each, offset to fit the National Grid box (0-700km east, 0-1300km north) at the
 smallest cell allowed: a geometric side length of SIDE_LENGTH_MIN metres. That
@@ -66,7 +68,7 @@ from operator import index
 from typing import SupportsIndex
 
 from .coords import SQRT3, side_length_of
-from .measure import SizeMeasure
+from .measure import Measure
 from .orientation import Orientation
 
 R_BITS = 19
@@ -115,8 +117,8 @@ SIZE_LEADING_BIT = 1 << SIZE_MANTISSA_BITS
 SIDE_LENGTH_MIN = 3
 SIDE_LENGTH_MAX = (SIZE_LEADING_BIT | SIZE_MANTISSA_MASK) << (SIZE_EXPONENT_MAX - 1)
 
-# the smallest stored size meeting SIDE_LENGTH_MIN, indexed by SizeMeasure: side-to-side is
-# sqrt(3) times the side length
+# the smallest stored size meeting SIDE_LENGTH_MIN, indexed by Measure: edge-to-edge is
+# sqrt(3) times the edge length
 SIZE_MIN = (SIDE_LENGTH_MIN, math.ceil(SIDE_LENGTH_MIN * SQRT3))
 
 UINT64_MASK = (1 << 64) - 1
@@ -126,7 +128,7 @@ UINT64_MASK = (1 << 64) - 1
 INVALID_CELL_ID = 0
 
 
-def pack_size(size: int, measure: SizeMeasure) -> int:
+def pack_size(size: int, measure: Measure) -> int:
     """Return the 12-bit size field for `size` metres, or raise if no field can hold it."""
     if not (SIZE_MIN[measure] <= size <= SIDE_LENGTH_MAX):
         raise ValueError(
@@ -158,15 +160,15 @@ def unpack_size(field: int) -> int:
 class CellIndex:
     """A decoded cell id. `size` is the stored whole-metre size, measured as `measure` says.
 
-    `side_length` is the *geometric* side length that size implies -- the stored size itself for a
-    SIDE_LENGTH cell, and `size / sqrt(3)` for a SIDE_TO_SIDE one. It is what every geometric
+    `side_length` is the *geometric* side length that size implies -- the stored size itself for an
+    EDGE_LENGTH cell, and `size / sqrt(3)` for an EDGE_TO_EDGE one. It is what every geometric
     formula wants; encoding and hierarchy arithmetic want `size`.
     """
 
     q: int
     r: int
     size: int
-    measure: SizeMeasure
+    measure: Measure
     orientation: Orientation
 
     @property
@@ -183,39 +185,34 @@ class CellIndex:
         return encode_size(self.q, self.r, self.size, self.measure, self.orientation)
 
 
-def resolve_size(side_length: SupportsIndex | None, side_to_side: SupportsIndex | None) -> tuple[int, SizeMeasure]:
-    """Turn the mutually exclusive `side_length` / `side_to_side` arguments into (size, measure).
+def resolve_size(size: SupportsIndex, measure: Measure) -> tuple[int, Measure]:
+    """Check the public `size` / `measure` arguments and return them as (int, Measure).
 
-    Every public function that takes a cell size takes it this way, and funnels it through here.
+    Every public function that takes a cell size takes this pair, and funnels it through here.
+    `measure` must be a `Measure` member: Measure and Orientation are both 0/1 IntEnums, so
+    converting a plain int (or an Orientation passed by mistake) would pick a lattice silently.
     """
-    # (None, None) must come first: it is what lets the type checker narrow `size` below to non-None
-    match side_length, side_to_side:
-        case None, None:
-            raise TypeError("a cell size is required: pass side_length or side_to_side")
-        case size, None:
-            return index(size), SizeMeasure.SIDE_LENGTH
-        case None, size:
-            return index(size), SizeMeasure.SIDE_TO_SIDE
-        case _:
-            raise TypeError("pass side_length or side_to_side, not both")
+    if not isinstance(measure, Measure):
+        raise TypeError(f"measure must be a Measure (Measure.EDGE_LENGTH or Measure.EDGE_TO_EDGE), got {measure!r}")
+    return index(size), measure
 
 
 def encode(
     q: SupportsIndex,
     r: SupportsIndex,
     *,
-    side_length: SupportsIndex | None = None,
-    side_to_side: SupportsIndex | None = None,
+    size: SupportsIndex,
+    measure: Measure,
     orientation: Orientation = Orientation.FLAT,
 ) -> int:
     """Encode an axial cell at a given size/orientation into a cell id.
 
-    Give exactly one of `side_length` (the length of an edge) or `side_to_side` (the distance
-    between two parallel edges), in whole metres from SIZE_MIN to 65,472 (above 1023, with 10
-    significant bits -- see the module docstring). Accepts numpy
-    integers as well as `int` -- see the module docstring.
+    `size` is in whole metres, from SIZE_MIN to 65,472 (above 1023, with 10 significant bits -- see
+    the module docstring), and `measure` says what it measures: `Measure.EDGE_LENGTH` (the length of an
+    edge) or `Measure.EDGE_TO_EDGE` (the distance between two parallel edges). Both are required.
+    Accepts numpy integers as well as `int` -- see the module docstring.
     """
-    size, measure = resolve_size(side_length, side_to_side)
+    size, measure = resolve_size(size, measure)
     return encode_size(q, r, size, measure, orientation)
 
 
@@ -223,7 +220,7 @@ def encode_size(
     q: SupportsIndex,
     r: SupportsIndex,
     size: SupportsIndex,
-    measure: SizeMeasure,
+    measure: Measure,
     orientation: Orientation,
 ) -> int:
     """`encode`, with the size already resolved -- the form internal callers holding a
@@ -274,7 +271,7 @@ def validate_cell_id(cell_id: SupportsIndex) -> tuple[int, int]:
         )
 
     size = unpack_size((cell_id >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK)
-    measure = SizeMeasure((cell_id >> MEASURE_SHIFT) & MEASURE_MASK)
+    measure = Measure((cell_id >> MEASURE_SHIFT) & MEASURE_MASK)
     if size < SIZE_MIN[measure]:
         raise ValueError(f"cell_id has an invalid size field: {cell_id:#x}")
     return cell_id, size
@@ -290,7 +287,7 @@ def decode(cell_id: SupportsIndex) -> CellIndex:
     cell_id, size = validate_cell_id(cell_id)
 
     orientation = Orientation((cell_id >> ORIENTATION_SHIFT) & ORIENTATION_MASK)
-    measure = SizeMeasure((cell_id >> MEASURE_SHIFT) & MEASURE_MASK)
+    measure = Measure((cell_id >> MEASURE_SHIFT) & MEASURE_MASK)
     q_enc = (cell_id >> Q_SHIFT) & Q_MASK
     r_enc = (cell_id >> R_SHIFT) & R_MASK
 

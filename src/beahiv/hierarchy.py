@@ -31,8 +31,8 @@ past `SIDE_LENGTH_MAX` likewise raises, from `encode`, as does halving below the
 are the only cases: sizes are binary floats (see `cell_id`), so 2x and 0.5x of a size are always
 sizes too.
 
-"side_length" throughout means the cell's stored size, whichever measure it is in: a SIDE_TO_SIDE
-cell's relatives are SIDE_TO_SIDE cells at 2x/0.5x its side-to-side distance, which is the same
+"side_length" throughout means the cell's stored size, whichever measure it is in: an EDGE_TO_EDGE
+cell's relatives are EDGE_TO_EDGE cells at 2x/0.5x its edge-to-edge distance, which is the same
 geometric 2x/0.5x, so everything above holds unchanged.
 
 `get_parent`/`get_child` take a scalar cell id only. `get_parents`/`get_children` also accept an

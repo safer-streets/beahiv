@@ -7,6 +7,49 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## `size=` + `measure=` replace `side_length=` / `side_to_side=`
+
+- **Why** — the user preferred `size=X, measure=bh.Measure...` over two mutually exclusive size
+  keywords. Keeping `side_length` (journal, "Side-to-side cell sizing") was justified as
+  non-breaking, but the keyword-only change broke every caller anyway.
+- **What**
+  - [measure.py](src/beahiv/measure.py): `SizeMeasure` → `Measure`, members `SIDE_LENGTH` /
+    `SIDE_TO_SIDE` → `EDGE_LENGTH` / `EDGE_TO_EDGE` (the user's naming). Still 0 / 1, so the bit
+    layout and every existing id are unchanged.
+  - Every size-taking public function (`encode`, `encode_morton`, `encode_batch`,
+    `lonlat_to_cell`(`_batch`), the deprecated `latlon_to_cell`(`_batch`), `bng_to_cell`(`_batch`),
+    `point_to_cell`, `polyfill`, `bbox_fill`) now takes `*, size, measure, orientation=FLAT`, with
+    both `size` and `measure` required. `resize_cell` takes `size` plus `measure=None` (meaning the
+    cell's own measure), replacing `new_side_length` / `new_side_to_side`.
+  - `cell_id.resolve_size(size, measure)` now type-checks `measure` and coerces `size` with
+    `index`. The "exactly one" checks are gone, since a missing keyword is Python's own `TypeError`.
+  - Tests rewritten with an `ast`-based script (as before), plus hand edits for the
+    variable-dispatched calls. The "exactly one size" tests became "requires size and measure"
+    and "refuses a measure that isn't a Measure". Added a test for `resize_cell`'s default measure.
+  - README ("Size and measure" section, API table, DuckDB `bh_polyfill` now
+    `measure=bh.Measure[name]`, re-verified against DuckDB 1.5.5 in safer-streets-tooling's env),
+    SKILL.md and AGENTS.md updated to match.
+  - Docs only (the user's request): bit 52, the 53rd bit, is now named in the
+    [cell_id.py](src/beahiv/cell_id.py) and README bit-layout tables as reserved for future use,
+    likely a Morton flag. Bits 53–63 are listed separately as permanently zero.
+  - `encode_morton`/`decode_morton` removed from the public API (the user's call): no longer
+    exported from `beahiv` or in `__all__`, README API table or SKILL.md. `morton.py` and its
+    tests stay, as internal code. README gains a "Future enhancements" section describing Morton
+    ids as waiting on bit 52. SKILL.md's troubleshooting line claimed `decode` raises on a Morton
+    id; it doesn't (it decodes to a wrong cell), so that claim is gone with the rest.
+- **Design decisions**
+  - **`measure` has no default** (except in `resize_cell`): a default would make `size=200` the
+    implicit-measure call that the keyword-only change was meant to rule out.
+  - **Only real `Measure` members are accepted** rather than `Measure(x)`: both enums are 0/1
+    IntEnums, so conversion would let `1` or `Orientation.FLAT` select a lattice silently.
+  - **The version stays 0.1.0**: it hasn't been tagged or released yet, so this is part of the
+    same breaking release.
+- **Follow-ups**
+  - safer-streets-tooling and the notebook now need `size=`/`measure=` rather than just keyword
+    sizes.
+  - Morton: set bit 52 in `encode_morton`, have `validate_cell_id`/`decode_batch` refuse (or route)
+    flagged ids, then re-export.
+
 ## 52-bit cell ids, exact as float64 (issue #9)
 
 - **Why** — An `int64` id that goes through a float64 (pandas adding a `NaN` to an int column, a

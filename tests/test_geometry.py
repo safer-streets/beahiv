@@ -4,7 +4,7 @@ import random
 import numpy as np
 import pytest
 
-from beahiv import INVALID_CELL_ID, Orientation, SizeMeasure, cell_polygon, cell_polygons, centroid, centroids, encode
+from beahiv import INVALID_CELL_ID, Measure, Orientation, cell_polygon, cell_polygons, centroid, centroids, encode
 from beahiv.coords import ORIGIN_X, ORIGIN_Y, cartesian_to_axial
 
 from ._geom_helpers import hex_area, point_in_polygon_with_tolerance, polygon_area
@@ -27,7 +27,7 @@ def test_area_is_constant_and_matches_formula():
         for _ in range(200):
             q = rng.randint(-10_000, 10_000)
             r = rng.randint(-10_000, 10_000)
-            cell_id = encode(q, r, side_length=side_length, orientation=orientation)
+            cell_id = encode(q, r, size=side_length, measure=Measure.EDGE_LENGTH, orientation=orientation)
             area = polygon_area(_vertices(cell_polygon(cell_id)))
             assert area == pytest.approx(expected, rel=RELATIVE_TOLERANCE)
 
@@ -41,7 +41,7 @@ def test_coordinate_stability_point_falls_within_returned_polygon():
         orientation = rng.choice(list(Orientation))
 
         q, r = cartesian_to_axial(x, y, side_length, orientation)
-        cell_id = encode(q, r, side_length=side_length, orientation=orientation)
+        cell_id = encode(q, r, size=side_length, measure=Measure.EDGE_LENGTH, orientation=orientation)
 
         polygon = cell_polygon(cell_id)
         centre = centroid(cell_id).coords[0]
@@ -57,7 +57,8 @@ def test_cell_polygons_matches_scalar_cell_polygon():
             encode(
                 rng.randint(-10_000, 10_000),
                 rng.randint(-10_000, 10_000),
-                side_length=side_length,
+                size=side_length,
+                measure=Measure.EDGE_LENGTH,
                 orientation=orientation,
             )
             for _ in range(200)
@@ -78,14 +79,14 @@ def test_cell_polygons_empty_input_returns_empty_list():
 
 def test_cell_polygons_accepts_an_array_of_ids():
     """The ids usually arrive as the uint64 array a batch call produced, not as a list."""
-    cell_ids = [encode(q, -3, side_length=250) for q in range(5)]
+    cell_ids = [encode(q, -3, size=250, measure=Measure.EDGE_LENGTH) for q in range(5)]
 
     assert cell_polygons(np.array(cell_ids, dtype=np.uint64)) == cell_polygons(cell_ids)
 
 
 def test_cell_polygons_gives_none_for_missing_and_invalid_ids():
     """Bad rows become None in place, so the result still lines up with the input row for row."""
-    valid = [encode(q, -3, side_length=250) for q in range(3)]
+    valid = [encode(q, -3, size=250, measure=Measure.EDGE_LENGTH) for q in range(3)]
     cell_ids = [valid[0], INVALID_CELL_ID, valid[1], None, valid[2] | (1 << 62)]
 
     polygons = cell_polygons(cell_ids)
@@ -98,7 +99,7 @@ def test_cell_polygons_gives_none_for_missing_and_invalid_ids():
 
 
 def test_centroids_gives_none_for_missing_and_invalid_ids():
-    valid = encode(4, -6, side_length=100)
+    valid = encode(4, -6, size=100, measure=Measure.EDGE_LENGTH)
 
     for lonlat in (False, True):
         points = centroids([None, valid, INVALID_CELL_ID], lonlat=lonlat)
@@ -109,8 +110,8 @@ def test_centroids_gives_none_for_missing_and_invalid_ids():
 
 def test_cell_polygons_rejects_mixed_orientation():
     cell_ids = [
-        encode(0, 0, side_length=500, orientation=Orientation.POINTY),
-        encode(0, 0, side_length=500, orientation=Orientation.FLAT),
+        encode(0, 0, size=500, measure=Measure.EDGE_LENGTH, orientation=Orientation.POINTY),
+        encode(0, 0, size=500, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT),
     ]
     with pytest.raises(ValueError, match="single orientation"):
         cell_polygons(cell_ids)
@@ -118,22 +119,26 @@ def test_cell_polygons_rejects_mixed_orientation():
 
 def test_cell_polygons_rejects_mixed_side_length():
     cell_ids = [
-        encode(0, 0, side_length=500, orientation=Orientation.FLAT),
-        encode(0, 0, side_length=250, orientation=Orientation.FLAT),
+        encode(0, 0, size=500, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT),
+        encode(0, 0, size=250, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT),
     ]
     with pytest.raises(ValueError, match="single size"):
         cell_polygons(cell_ids)
 
 
-def test_side_to_side_polygon_has_that_distance_between_parallel_sides():
-    """Measured from the outside: opposite edge midpoints of the returned hexagon are `side_to_side`
-    apart, and the area is the across-flats formula sqrt(3)/2 * d**2, not the side-length one."""
+def test_edge_to_edge_polygon_has_that_distance_between_parallel_sides():
+    """Measured from the outside: opposite edge midpoints of the returned hexagon are `size`
+    apart, and the area is the edge-to-edge formula sqrt(3)/2 * d**2, not the side-length one."""
     rng = random.Random(3)
     for orientation in Orientation:
         for _ in range(100):
-            d = random_size(rng, SizeMeasure.SIDE_TO_SIDE)
+            d = random_size(rng, Measure.EDGE_TO_EDGE)
             cell_id = encode(
-                rng.randint(-10_000, 10_000), rng.randint(-10_000, 10_000), orientation=orientation, side_to_side=d
+                rng.randint(-10_000, 10_000),
+                rng.randint(-10_000, 10_000),
+                orientation=orientation,
+                size=d,
+                measure=Measure.EDGE_TO_EDGE,
             )
             vertices = _vertices(cell_polygon(cell_id))
             midpoints = [
@@ -145,14 +150,19 @@ def test_side_to_side_polygon_has_that_distance_between_parallel_sides():
             assert polygon_area(vertices) == pytest.approx(math.sqrt(3) / 2 * d**2, rel=RELATIVE_TOLERANCE)
 
 
-def test_side_to_side_cell_polygons_matches_scalar():
-    cell_ids = [encode(q, -q, orientation=Orientation.POINTY, side_to_side=300) for q in range(-50, 50)]
+def test_edge_to_edge_cell_polygons_matches_scalar():
+    cell_ids = [
+        encode(q, -q, orientation=Orientation.POINTY, size=300, measure=Measure.EDGE_TO_EDGE) for q in range(-50, 50)
+    ]
     for batch, scalar in zip(cell_polygons(cell_ids), (cell_polygon(c) for c in cell_ids), strict=True):
         assert batch is not None and batch.equals_exact(scalar, tolerance=0)
 
 
 def test_cell_polygons_rejects_mixed_measure():
-    cell_ids = [encode(0, 0, side_length=500), encode(0, 0, side_to_side=500)]
+    cell_ids = [
+        encode(0, 0, size=500, measure=Measure.EDGE_LENGTH),
+        encode(0, 0, size=500, measure=Measure.EDGE_TO_EDGE),
+    ]
     with pytest.raises(ValueError, match="single size measure"):
         cell_polygons(cell_ids)
 
@@ -160,7 +170,7 @@ def test_cell_polygons_rejects_mixed_measure():
 def test_origin_cell_centroid_is_the_grid_origin():
     for orientation in Orientation:
         for cell_id in (
-            encode(0, 0, side_length=250, orientation=orientation),
-            encode(0, 0, orientation=orientation, side_to_side=250),
+            encode(0, 0, size=250, measure=Measure.EDGE_LENGTH, orientation=orientation),
+            encode(0, 0, orientation=orientation, size=250, measure=Measure.EDGE_TO_EDGE),
         ):
             assert centroid(cell_id).coords[0] == (ORIGIN_X, ORIGIN_Y)
