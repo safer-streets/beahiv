@@ -65,7 +65,8 @@ Write the entry as part of the change, not after the fact.
     old side-to-side id, and every old POINTY id with a side ≥ 512 m is rejected ("reserved
     bits"). Old POINTY side-length ids under 512 m still decode, to the wrong cell. Measured:
     100% of those decode. Spending bit 52 as a "new layout" marker would close most of that gap
-    (leaving old POINTY 512–1023 m), at the cost of the spare bit. Not done; the user's call.
+    (leaving old POINTY 512–1023 m), at the cost of the spare bit. The user chose to keep the bit free, so regenerating stored
+    ids is the migration, not detection.
   - The R port still has the old layout.
   - safer-streets-tooling: its 202 m grid is representable, but any stored ids must be regenerated.
 
