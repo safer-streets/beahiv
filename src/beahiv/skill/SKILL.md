@@ -74,8 +74,9 @@ from beahiv import Orientation
 9. **Store ids as `int64`** (DuckDB `BIGINT`, Arrow `int64`). Every id is below 2**52, so it is
    also exact as a float64 and as a JavaScript number in JSON. Scalar functions accept `np.int64`
    ids directly.
-10. **Ids made before 1.0.0 are not compatible.** That means 0.0.x and the earlier 1.0.1 release,
-    which predates 1.0.0. 1.0.0 moved the grid origin and changed the id layout. Most old ids
+10. **Ids made before 0.1.0 are not compatible.** That means 0.0.x, and any build that called
+    itself 1.0.1 before the version numbering was reset. 0.1.0 moved the grid origin and changed
+    the id layout. Most old ids
     (every FLAT one, including the `beahiv202` grid) now fail to decode with "reserved bits set",
     but old POINTY ids with sides under 512 m still decode, to a different place. Regenerate
     stored ids from their coordinates rather than mixing them.

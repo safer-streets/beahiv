@@ -365,8 +365,8 @@ middle of both fields at the 3 m minimum, in both orientations, because GB lies
 entirely north-east of the grid origin. That leaves over 300 km of room beyond
 every edge of the box, even at 3 m.
 
-**Ids from earlier layouts** (0.0.x, and 1.0.x before this layout) are not
-compatible. `decode` rejects every old FLAT id, every old side-to-side id and
+**Ids from earlier layouts** (0.0.x, or an untagged pre-renumbering 1.0.1
+build) are not compatible. `decode` rejects every old FLAT id, every old side-to-side id and
 every old POINTY id with a side of 512 m or more, as "reserved bits set". Old
 POINTY side-length ids with smaller sides fall inside the new range and
 decode to a different cell. Regenerate stored ids from their coordinates

@@ -58,7 +58,7 @@ Write the entry as part of the change, not after the fact.
   - **No margin around the National Grid box.** I first fitted the offsets to the box plus 50 km,
     unprompted; the user questioned it. It never constrained anything: even at 3 m the offsets
     leave over 300 km of room beyond every edge, so the test and docs now promise just the box.
-  - Bundled into #10's 1.0.0, which already requires regenerating every id (origin move), so
+  - Bundled into #10's 0.1.0, which already requires regenerating every id (origin move), so
     users migrate once.
 - **Follow-ups**
   - Old ids: every old FLAT id (safer-streets-tooling's `beahiv202` grid is FLAT 202 m), every
@@ -129,8 +129,10 @@ Write the entry as part of the change, not after the fact.
   - README quickstart outputs recomputed. They were stale even on this branch: with the moved
     origin, Trafalgar Square decodes to `q=706`, not 707. The API table shows keyword-only
     signatures.
-- **Design decisions** — Version is 1.0.0, not the branch's 2.0.0: `main` had since renumbered
-  to 0.0.x ("(de)bump version"). The rebase first used 0.1.0; the user chose 1.0.0 instead.
+- **Design decisions** — Version is 0.1.0, not the branch's 2.0.0: `main` had since renumbered
+  to 0.0.x ("(de)bump version"), and under 0.x a breaking change bumps the minor version. It was
+  1.0.0 for a while during review; the user set it back to 0.1.0. The pre-renumbering 1.0.1 was
+  never tagged or published, so 0.1.0 sorts after every real release (`v0.0.0`–`v0.0.2`).
 - **Follow-ups** — As before: safer-streets-tooling and the notebook need keyword sizes and
   `lonlat_to_cell`.
 
@@ -154,7 +156,7 @@ Write the entry as part of the change, not after the fact.
   - DuckDB: one UDF with a measure-string argument over one UDF per measure — SQL stays explicit
     and a bad measure is a Python `TypeError`, not a silent side length.
 - **Follow-ups**
-  - Breaking for every positional caller -- hence a breaking version bump (1.0.0 after the rebase onto main).
+  - Breaking for every positional caller -- hence a breaking version bump (0.1.0 after the rebase onto main).
   - safer-streets-tooling and the exploratory notebook still call positionally.
 
 ## Side-to-side cell sizing, and a named grid origin (`ho-compat` branch)

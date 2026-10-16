@@ -270,7 +270,7 @@ def validate_cell_id(cell_id: SupportsIndex) -> tuple[int, int]:
     if cell_id >> RESERVED_SHIFT:
         raise ValueError(
             f"cell_id has reserved bits set, so is not a valid cell id: {cell_id:#x} -- "
-            "an id from before beahiv 1.0, or one that has been through a lossy conversion?"
+            "an id from before beahiv 0.1.0, or one that has been through a lossy conversion?"
         )
 
     size = unpack_size((cell_id >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK)
