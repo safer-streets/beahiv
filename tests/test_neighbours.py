@@ -1,9 +1,12 @@
 import random
 
 import numpy as np
+import pytest
 
-from beahiv import Orientation, decode, distance, encode, get_neighbours, k_ring
+from beahiv import Measure, Orientation, decode, distance, encode, get_neighbours, k_ring
 from beahiv.neighbours import NEIGHBOUR_OFFSETS
+
+from ._sizes import random_size
 
 
 def _random_origin_cells(n, seed=0):
@@ -11,9 +14,9 @@ def _random_origin_cells(n, seed=0):
     for _ in range(n):
         q = rng.randint(-1000, 1000)
         r = rng.randint(-1000, 1000)
-        side_length = rng.randint(1, 5000)
+        side_length = random_size(rng, upto=5000)
         orientation = rng.choice(list(Orientation))
-        yield encode(q, r, side_length, orientation)
+        yield encode(q, r, size=side_length, measure=Measure.EDGE_LENGTH, orientation=orientation)
 
 
 def test_every_cell_has_six_neighbours():
@@ -28,7 +31,7 @@ def test_neighbour_symmetry():
 
 
 def test_neighbour_offsets_are_distance_one():
-    origin = encode(0, 0, 100, Orientation.POINTY)
+    origin = encode(0, 0, size=100, measure=Measure.EDGE_LENGTH, orientation=Orientation.POINTY)
     for cell_id in get_neighbours(origin):
         assert distance(origin, cell_id) == 1
 
@@ -42,12 +45,12 @@ def test_distance_is_symmetric_and_zero_for_self():
     for cell_id in cells:
         idx = decode(cell_id)
         dq, dr = rng.choice(NEIGHBOUR_OFFSETS)
-        other = encode(idx.q + dq, idx.r + dr, idx.side_length, idx.orientation)
+        other = encode(idx.q + dq, idx.r + dr, size=idx.size, measure=Measure.EDGE_LENGTH, orientation=idx.orientation)
         assert distance(cell_id, other) == distance(other, cell_id)
 
 
 def test_k_ring_counts_match_hex_formula():
-    origin = encode(0, 0, 100, Orientation.POINTY)
+    origin = encode(0, 0, size=100, measure=Measure.EDGE_LENGTH, orientation=Orientation.POINTY)
     for k in range(0, 6):
         ring = k_ring(origin, k)
         assert len(set(ring)) == len(ring)  # no duplicates
@@ -55,7 +58,7 @@ def test_k_ring_counts_match_hex_formula():
 
 
 def test_k_ring_cells_are_within_k_hops():
-    origin = encode(5, -3, 250, Orientation.FLAT)
+    origin = encode(5, -3, size=250, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT)
     k = 4
     for cell_id in k_ring(origin, k):
         assert distance(origin, cell_id) <= k
@@ -64,8 +67,23 @@ def test_k_ring_cells_are_within_k_hops():
 def test_ring_operations_accept_numpy_integer_ids():
     """Regression: k_ring on an np.int64 id raised OverflowError, encode's `& UINT64_MASK` not
     fitting an int64 operand."""
-    origin = encode(5, -3, 250)
+    origin = encode(5, -3, size=250, measure=Measure.EDGE_LENGTH)
 
     assert k_ring(np.int64(origin), 2) == k_ring(origin, 2)
     assert get_neighbours(np.int64(origin)) == get_neighbours(origin)
     assert distance(np.int64(origin), np.uint64(origin)) == 0
+
+
+def test_neighbours_and_rings_keep_the_measure():
+    cell_id = encode(5, -3, orientation=Orientation.POINTY, size=120, measure=Measure.EDGE_TO_EDGE)
+    for other in (*get_neighbours(cell_id), *k_ring(cell_id, 2)):
+        idx = decode(other)
+        assert (idx.size, idx.orientation, idx.measure) == (120, Orientation.POINTY, Measure.EDGE_TO_EDGE)
+        assert distance(cell_id, other) <= 2
+
+
+def test_distance_rejects_mixed_measures():
+    with pytest.raises(ValueError, match="measure"):
+        distance(
+            encode(0, 0, size=100, measure=Measure.EDGE_LENGTH), encode(1, 0, size=100, measure=Measure.EDGE_TO_EDGE)
+        )

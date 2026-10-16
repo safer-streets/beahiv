@@ -17,6 +17,8 @@ from pyproj import Transformer
 
 from .cell_id import (
     INVALID_CELL_ID,
+    MEASURE_MASK,
+    MEASURE_SHIFT,
     ORIENTATION_MASK,
     ORIENTATION_SHIFT,
     Q_MASK,
@@ -24,13 +26,18 @@ from .cell_id import (
     Q_SHIFT,
     R_MASK,
     R_OFFSET,
-    RESERVED_MASK,
     RESERVED_SHIFT,
     SIDE_LENGTH_MASK,
-    SIDE_LENGTH_MAX,
     SIDE_LENGTH_SHIFT,
+    SIZE_LEADING_BIT,
+    SIZE_MANTISSA_BITS,
+    SIZE_MANTISSA_MASK,
+    SIZE_MIN,
+    pack_size,
+    resolve_size,
 )
-from .coords import SQRT3
+from .coords import ORIGIN_X, ORIGIN_Y, SQRT3, side_length_of
+from .measure import Measure
 from .orientation import Orientation
 
 # A column of cell ids, as the batch decoders take it. ArrayLike alone has no room for a None among
@@ -67,6 +74,7 @@ def axial_to_cartesian_batch(
     side_length: float,
     orientation: Orientation = Orientation.FLAT,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorised `coords.axial_to_cartesian`; `side_length` is likewise the geometric one."""
     q = np.asarray(q, dtype=np.float64)
     r = np.asarray(r, dtype=np.float64)
     s = side_length
@@ -76,7 +84,7 @@ def axial_to_cartesian_batch(
     else:
         x = 1.5 * s * q
         y = s * SQRT3 * (r + q / 2.0)
-    return x, y
+    return ORIGIN_X + x, ORIGIN_Y + y
 
 
 def cartesian_to_axial_batch(
@@ -85,8 +93,8 @@ def cartesian_to_axial_batch(
     side_length: float,
     orientation: Orientation = Orientation.FLAT,
 ) -> tuple[np.ndarray, np.ndarray]:
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64) - ORIGIN_X
+    y = np.asarray(y, dtype=np.float64) - ORIGIN_Y
     s = side_length
 
     if orientation == Orientation.POINTY:
@@ -120,18 +128,20 @@ def cartesian_to_axial_batch(
 def encode_batch(
     q: np.ndarray,
     r: np.ndarray,
-    side_length: int,
+    *,
+    size: int,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
-    """Encode axial coordinates into int64 cell ids -- see `cell_id.encode` for the layout."""
+    """Encode axial coordinates into int64 cell ids -- see `cell_id.encode` for the layout.
+
+    `size` is required and `measure` defaults to EDGE_LENGTH, as for `cell_id.encode`.
+    """
     q = np.asarray(q, dtype=np.int64)
     r = np.asarray(r, dtype=np.int64)
-
-    # side_length doesn't fill its field, so an oversized one would overflow into
-    # the orientation bit rather than being masked off -- one scalar check per
-    # call, not per row, so the vectorised path pays nothing for it
-    if not (1 <= side_length <= SIDE_LENGTH_MAX):
-        raise ValueError(f"side_length must be in [1, {SIDE_LENGTH_MAX}], got {side_length}")
+    size, measure = resolve_size(size, measure)
+    # one scalar size for the whole call, so it is packed (and validated) once, not per row
+    size_field = pack_size(size, measure)
 
     q_enc = q + Q_OFFSET
     r_enc = r + R_OFFSET
@@ -139,30 +149,31 @@ def encode_batch(
     if np.any((q_enc < 0) | (q_enc > Q_MASK)) or np.any((r_enc < 0) | (r_enc > R_MASK)):
         raise ValueError("q or r out of representable range")
 
-    # int64, never uint64: the reserved bits keep every id below 2**61, and a signed dtype is what
-    # a BIGINT column holds without conversion. Mixing uint64 with Python ints/int64 also silently
-    # promotes to float64 in numpy, which loses the low bits of an id.
+    # int64, never uint64: a signed dtype is what a BIGINT column holds without conversion
     return (
-        (np.int64(int(orientation)) << ORIENTATION_SHIFT)
-        | (np.int64(side_length) << SIDE_LENGTH_SHIFT)
+        (np.int64(int(measure)) << MEASURE_SHIFT)
+        | (np.int64(int(orientation)) << ORIENTATION_SHIFT)
+        | (np.int64(size_field) << SIDE_LENGTH_SHIFT)
         | (q_enc << Q_SHIFT)
         | r_enc
     )
 
 
-_FLOAT_IDS = (
-    "cell ids must be integers, not floats: float64 holds only 53 bits exactly, so a 64-bit id stored "
-    "in one has already lost its low bits and would decode to the wrong cell. This usually means an "
-    "int64 column gained a NaN -- keep it integer instead (pandas 'Int64', or fill with INVALID_CELL_ID)"
-)
+_SIZE_MIN = np.array(SIZE_MIN, dtype=np.int64)
+# a float id is exact below 2**53 (every valid one is); anything at or above can't be one anyway
+_FLOAT_ID_LIMIT = 2.0**53
+
+
+def _float_ids(ids: np.ndarray) -> np.ndarray:
+    whole = np.isfinite(ids) & (ids == np.floor(ids)) & (np.abs(ids) < _FLOAT_ID_LIMIT)
+    return np.where(whole, ids, INVALID_CELL_ID).astype(np.int64)
 
 
 def _object_ids(ids: np.ndarray) -> np.ndarray:
     out = np.full(ids.shape, INVALID_CELL_ID, dtype=np.int64)
     for i, value in np.ndenumerate(ids):
         if isinstance(value, (float, np.floating)):
-            if not np.isnan(value) and value != INVALID_CELL_ID:
-                raise TypeError(_FLOAT_IDS)
+            out[i] = _float_ids(np.array([value], dtype=np.float64))[0]
             continue
         try:
             value = index(value)
@@ -177,14 +188,14 @@ def _object_ids(ids: np.ndarray) -> np.ndarray:
 def _as_cell_id_array(cell_ids: CellIdsLike) -> np.ndarray:
     """Coerce an array-like of cell ids to int64, with every missing entry as INVALID_CELL_ID.
 
-    Nulls are filled *before* numpy sees the data, never after: `np.asarray` on a pandas `Int64`
-    column holding `<NA>` returns float64, and on a nullable pyarrow array likewise, which has
-    already destroyed every id above 2**53 -- every FLAT id, for one. Hence the duck-typed
-    `fillna` (pandas) / `fill_null` (pyarrow, polars) rather than a NaN check afterwards.
+    Floats are accepted: every valid id is below 2**52, so one that has been through a float64 (a
+    pandas int64 column that gained a NaN, a JSON number) comes back exact. NaN is missing, and a
+    non-integral or out-of-range float can't be an id, so it is treated the same way. Nulls are
+    still filled via the duck-typed `fillna` (pandas) / `fill_null` (pyarrow, polars) before numpy
+    sees the data, which keeps a nullable integer column integer rather than relying on that.
 
-    A float array is rejected unless it holds nothing but NaN/0, i.e. no id that could have been
-    damaged. uint64 is reinterpreted as int64, which turns an id with bit 63 set negative, where
-    the reserved-bit check in `decode_batch` sees it.
+    uint64 is reinterpreted as int64, which turns an id with bit 63 set negative, where the
+    reserved-bit check in `decode_batch` sees it.
     """
     fill = getattr(cell_ids, "fillna", None) or getattr(cell_ids, "fill_null", None)
     if fill is not None:
@@ -192,56 +203,66 @@ def _as_cell_id_array(cell_ids: CellIdsLike) -> np.ndarray:
     ids = np.asarray(cell_ids)
     if isinstance(cell_ids, (list, tuple)) and ids.dtype.kind not in "iu":
         # numpy infers float64 for a list mixing ints with a NaN *or* with one int >= 2**63, which
-        # the float check below would misreport -- read as objects, the Python ints stay exact
+        # would round the big int -- read as objects, the Python ints stay exact
         ids = np.asarray(cell_ids, dtype=object)
     if ids.dtype.kind in "iu":
         return ids.astype(np.int64, copy=False)
     if ids.dtype.kind == "f":
-        if np.any(~np.isnan(ids) & (ids != INVALID_CELL_ID)):
-            raise TypeError(_FLOAT_IDS)
-        return np.full(ids.shape, INVALID_CELL_ID, dtype=np.int64)
+        return _float_ids(ids)
     if ids.dtype.kind == "O":
         return _object_ids(ids)
     raise TypeError(f"cell ids must be integers, got an array of {ids.dtype}")
 
 
-def decode_batch(cell_ids: CellIdsLike) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return (q, r, side_length, orientation) arrays for a batch of cell ids.
+def decode_batch(
+    cell_ids: CellIdsLike,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return (q, r, size, measure, orientation) arrays for a batch of cell ids.
+
+    `size` is the stored field, as `CellIndex.size` -- *not* the geometric side length when the
+    measure is EDGE_TO_EDGE (see `coords.side_length_of`).
 
     Unlike scalar `decode`, a bad row doesn't raise: every id `decode` would reject (see
-    `cell_id.validate_cell_id`) -- INVALID_CELL_ID, a missing value, reserved bits set, a
-    side_length outside [1, SIDE_LENGTH_MAX] -- decodes to all zeros instead, exactly as
-    INVALID_CELL_ID's own bits read. `side_length == 0` is therefore the validity mask; no valid
-    id has it. Float input still raises -- see `_as_cell_id_array`.
+    `cell_id.validate_cell_id`) -- INVALID_CELL_ID, a missing value, reserved bits set, an invalid
+    size field -- decodes to all zeros instead, exactly as INVALID_CELL_ID's own bits read.
+    `size == 0` is therefore the validity mask; no valid id has it.
     """
     cell_ids = _as_cell_id_array(cell_ids)
 
     orientation = ((cell_ids >> ORIENTATION_SHIFT) & ORIENTATION_MASK).astype(np.uint8)
-    side_length = (cell_ids >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
+    measure = ((cell_ids >> MEASURE_SHIFT) & MEASURE_MASK).astype(np.uint8)
+    size_field = (cell_ids >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
+    exponent = size_field >> SIZE_MANTISSA_BITS
+    mantissa = size_field & SIZE_MANTISSA_MASK
+    size = np.where(exponent == 0, mantissa, (SIZE_LEADING_BIT | mantissa) << np.maximum(exponent - 1, 0))
     q = ((cell_ids >> Q_SHIFT) & Q_MASK) - Q_OFFSET
     r = (cell_ids & R_MASK) - R_OFFSET
 
-    # a negative id has bit 63 set, which is a reserved bit -- the arithmetic shift keeps
-    # those ones, so this rejects it rather than needing a sign check of its own
-    reserved = (cell_ids >> RESERVED_SHIFT) & RESERVED_MASK
-    invalid = (reserved != 0) | (side_length < 1) | (side_length > SIDE_LENGTH_MAX)
+    # mirrors cell_id.unpack_size and validate_cell_id. A negative id has bit 63 set, which the
+    # arithmetic shift keeps, so `>> RESERVED_SHIFT` is non-zero for it without a sign check
+    invalid = ((cell_ids >> RESERVED_SHIFT) != 0) | (size < _SIZE_MIN[measure])
     if np.any(invalid):
-        for field in (q, r, side_length, orientation):
+        for field in (q, r, size, measure, orientation):
             field[invalid] = 0
 
-    return q, r, side_length, orientation
+    return q, r, size, measure, orientation
 
 
 def lonlat_to_cell_batch(
     lons: ArrayLike,
     lats: ArrayLike,
-    side_length: int,
+    *,
+    size: int,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode each WGS84 (lon, lat) pair; NaN coordinates map to INVALID_CELL_ID.
 
+    `size` is required and `measure` defaults to EDGE_LENGTH, as for `cell_id.encode`.
+
     Raises if any non-NaN pair is outside EPSG:27700's area of use -- see `geo.lonlat_to_cell`.
     """
+    s = side_length_of(*resolve_size(size, measure))
     lons = np.asarray(lons, dtype=np.float64)
     lats = np.asarray(lats, dtype=np.float64)
     valid = ~(np.isnan(lons) | np.isnan(lats))
@@ -250,8 +271,8 @@ def lonlat_to_cell_batch(
     cell_ids = np.full(lons.shape, INVALID_CELL_ID, dtype=np.int64)
     if np.any(valid):
         x, y = _TO_BNG.transform(lons[valid], lats[valid])
-        q, r = cartesian_to_axial_batch(x, y, side_length, orientation)
-        cell_ids[valid] = encode_batch(q, r, side_length, orientation)
+        q, r = cartesian_to_axial_batch(x, y, s, orientation)
+        cell_ids[valid] = encode_batch(q, r, size=size, measure=measure, orientation=orientation)
     return cell_ids
 
 
@@ -262,17 +283,21 @@ def lonlat_to_cell_batch(
 def latlon_to_cell_batch(
     lats: ArrayLike,
     lons: ArrayLike,
-    side_length: int,
+    *,
+    size: int,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Deprecated: use `lonlat_to_cell_batch(lons, lats, ...)` -- note the swapped argument order."""
-    return lonlat_to_cell_batch(lons, lats, side_length, orientation)
+    return lonlat_to_cell_batch(lons, lats, size=size, measure=measure, orientation=orientation)
 
 
 def bng_to_cell_batch(
     x: ArrayLike,
     y: ArrayLike,
-    side_length: int,
+    *,
+    size: int,
+    measure: Measure = Measure.EDGE_LENGTH,
     orientation: Orientation = Orientation.FLAT,
 ) -> np.ndarray:
     """Encode each EPSG:27700 (x, y) pair; NaN coordinates map to INVALID_CELL_ID.
@@ -280,41 +305,48 @@ def bng_to_cell_batch(
     No area-of-use check: unlike the lat/lon path there is no projection to extrapolate, so a
     coordinate far outside GB is simply a cell far from the origin — and one far enough to exceed
     the q/r bit budget is rejected by ``encode_batch`` rather than wrapping silently.
+
+    `size` is required and `measure` defaults to EDGE_LENGTH, as for `cell_id.encode`.
     """
+    s = side_length_of(*resolve_size(size, measure))
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     valid = ~(np.isnan(x) | np.isnan(y))
 
     cell_ids = np.full(x.shape, INVALID_CELL_ID, dtype=np.int64)
     if np.any(valid):
-        q, r = cartesian_to_axial_batch(x[valid], y[valid], side_length, orientation)
-        cell_ids[valid] = encode_batch(q, r, side_length, orientation)
+        q, r = cartesian_to_axial_batch(x[valid], y[valid], s, orientation)
+        cell_ids[valid] = encode_batch(q, r, size=size, measure=measure, orientation=orientation)
     return cell_ids
 
 
-def _cell_centres(cell_ids: CellIdsLike) -> tuple[np.ndarray, np.ndarray, int, Orientation]:
-    """`cell_centre_batch`, plus the one side_length and orientation it found.
+def _cell_centres(cell_ids: CellIdsLike) -> tuple[np.ndarray, np.ndarray, float, Orientation]:
+    """`cell_centre_batch`, plus the geometric side length and the orientation of the one grid it found.
 
     `geometry.cell_polygons` needs those too, and they are only knowable after decoding. With no
-    valid row there is no grid at all, and the side_length comes back 0.
+    valid row there is no grid at all, and the side length comes back 0.
     """
-    q, r, side_length, orientation = decode_batch(cell_ids)
-    valid = side_length > 0
+    q, r, size, measure, orientation = decode_batch(cell_ids)
+    valid = size > 0
 
     orientations = np.unique(orientation[valid])
     if len(orientations) > 1:
         raise ValueError("cell_centre_batch requires a single orientation per call")
-    lengths = np.unique(side_length[valid])
-    if len(lengths) > 1:
-        raise ValueError("cell_centre_batch requires a single side_length per call")
+    sizes = np.unique(size[valid])
+    if len(sizes) > 1:
+        raise ValueError("cell_centre_batch requires a single size per call")
+    measures = np.unique(measure[valid])
+    if len(measures) > 1:
+        raise ValueError("cell_centre_batch requires a single size measure per call")
 
     x = np.full(q.shape, np.nan)
     y = np.full(q.shape, np.nan)
-    if not len(lengths):
-        return x, y, 0, Orientation.FLAT
-    grid = int(lengths[0]), Orientation(int(orientations[0]))
-    x[valid], y[valid] = axial_to_cartesian_batch(q[valid], r[valid], *grid)
-    return x, y, *grid
+    if not len(sizes):
+        return x, y, 0.0, Orientation.FLAT
+    s = side_length_of(int(sizes[0]), Measure(int(measures[0])))
+    grid_orientation = Orientation(int(orientations[0]))
+    x[valid], y[valid] = axial_to_cartesian_batch(q[valid], r[valid], s, grid_orientation)
+    return x, y, s, grid_orientation
 
 
 def cell_centre_batch(cell_ids: CellIdsLike) -> tuple[np.ndarray, np.ndarray]:
@@ -322,7 +354,7 @@ def cell_centre_batch(cell_ids: CellIdsLike) -> tuple[np.ndarray, np.ndarray]:
 
     A missing or invalid id (anything `decode_batch` zeroes) gets a NaN centre rather than raising.
 
-    Every valid cell must share the same side_length and orientation -- a single
+    Every valid cell must share the same size, orientation and measure -- a single
     axial_to_cartesian_batch call can't mix them.
     """
     x, y, _, _ = _cell_centres(cell_ids)

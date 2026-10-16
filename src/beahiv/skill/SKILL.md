@@ -12,7 +12,7 @@ description: >-
 
 beahiv is a hexagonal spatial index for Great Britain, native to **EPSG:27700** (British National
 Grid metres). Think of it as a local H3 with exact, flat-plane geometry. Each cell is a single
-`int64` id that encodes `(q, r, side_length, orientation)`, and every cell at a given size has
+`int64` id that encodes `(q, r, size, measure, orientation)`, and every cell at a given size has
 the same area.
 
 ```python
@@ -38,13 +38,22 @@ from beahiv import Orientation
    - Shapely or geopandas points: `point_to_cell`. A declared container CRS of 27700 or 4326 is
      honoured, and any other CRS raises (reproject with `.to_crs(27700)` first). Bare `Point`s
      and lists carry no CRS and are read as EPSG:27700 unless you pass `lonlat=True`.
-4. **`side_length` is a whole number of metres**, from 1 to 100,000, and must be an `int`, not a
-   float. There is no resolution table: 200 means 200 m sides. `orientation` defaults to
-   `Orientation.FLAT`. Pick one `side_length`/`orientation` pair per analysis and pass it
+4. **Size is keyword-only: `size=`, plus `measure=` saying what it measures.** The default,
+   `measure=Measure.EDGE_LENGTH`, makes `size` the length of an edge, and
+   `measure=Measure.EDGE_TO_EDGE` the distance between two parallel edges. `size` is a whole number of metres from 3 m
+   to 65,472 m (6 m minimum for `EDGE_TO_EDGE`), and must be an
+   `int`, not a float. Every metre up to 1,023 is valid; above that a size needs 10 significant
+   binary digits, so 1000, 1500, 5000 and 10000 work but 1025 and 14500 raise, and the error names
+   the nearest valid sizes (14496, 14512). 2x and 0.5x of a valid size are always valid. There is no resolution table: `size=200` means 200 m edges.
+   Leaving out `size`, passing a bare positional number, or passing a `measure` that
+   isn't a `Measure` member (a plain `0`/`1` included) raises `TypeError`. `orientation` (default `Orientation.FLAT`) and
+   `predicate` are keyword-only too. The id records which measure was used (`Measure`), so
+   decoded cells keep it. Pick one size, measure and orientation per analysis and pass them
    everywhere.
-5. **Different grids don't mix.** Never compare or combine ids across sizes or orientations
-   (FLAT and POINTY are different lattices). `distance`, `cell_polygons` and `centroids` need
-   every id to share one `side_length` and `orientation`.
+5. **Different grids don't mix.** Never compare or combine ids across sizes, measures or
+   orientations. FLAT and POINTY are different lattices, and so are `EDGE_LENGTH` and
+   `EDGE_TO_EDGE` at the same `size`. `distance`, `cell_polygons` and `centroids` need every id to share one
+   size, measure and orientation.
 6. **Sizes don't nest.** Cells of different sizes don't tile each other. Use `resize_cell`
    for a covering at any other size. `get_parents`/`get_children` (overlapping cells at 2x/0.5x)
    and `get_parent`/`get_child` (same-centroid cell at 2x/0.5x, often `None`) are factor-of-two
@@ -53,10 +62,10 @@ from beahiv import Orientation
    encode to it rather than raising. Going the other way, the *batch* functions tolerate a
    null or invalid id (`INVALID_CELL_ID`, `None`, `NaN`, pandas `<NA>`, Arrow null):
    `cell_polygons`/`centroids` give `None` for that row, `batch.cell_centre_batch` gives NaN,
-   `batch.decode_batch` gives zeros (`side_length == 0`), and array `get_parents`/`get_children`
+   `batch.decode_batch` gives zeros (`size == 0`), and array `get_parents`/`get_children`
    skip it. The *scalar* functions (`decode`, `cell_polygon`, `centroid`, `get_neighbours`, ...)
-   still **raise** for one. Keep id columns integer: pandas `Int64` or Arrow `int64` for nullable
-   ids, never float64, which has already corrupted any id it holds and raises `TypeError`.
+   still **raise** for one. A float64 id column (e.g. an int64 one that gained a `NaN`) is fine:
+   every id is below 2**52, so it survives a float exactly, and `NaN` is a missing row.
 8. **Scalar or array dispatch is automatic** for `lonlat_to_cell`, `bng_to_cell`, `point_to_cell`,
    `get_parents` and `get_children`. A Python `float`/`int` (or a single `Point`) gives a Python
    `int`. A list, ndarray, Series or pyarrow array gives an `int64` ndarray, or a pyarrow array
@@ -64,22 +73,29 @@ from beahiv import Orientation
    `df["cell_id"] = ...`. Shapely-returning functions come in singular/plural pairs instead:
    `centroid` takes one id and `centroids` many, and the same goes for `cell_polygon` and
    `cell_polygons`.
-9. **Store ids as signed 64-bit** (`int64`, DuckDB `BIGINT`, Arrow `int64`). Every id is below
-   2**61. Scalar functions accept `np.int64` ids directly.
+9. **Store ids as `int64`** (DuckDB `BIGINT`, Arrow `int64`). Every id is below 2**52, so it is
+   also exact as a float64 and as a JavaScript number in JSON. Scalar functions accept `np.int64`
+   ids directly.
+10. **Ids made before 0.1.0 are not compatible.** That means 0.0.x, and any build that called
+    itself 1.0.1 before the version numbering was reset. 0.1.0 moved the grid origin and changed
+    the id layout. Most old ids
+    (every FLAT one, including the `beahiv202` grid) now fail to decode with "reserved bits set",
+    but old POINTY ids with sides under 512 m still decode, to a different place. Regenerate
+    stored ids from their coordinates rather than mixing them.
 
 ## Recipes
 
 Points in a DataFrame to cells:
 
 ```python
-df["cell_id"] = beahiv.lonlat_to_cell(df["lon"], df["lat"], side_length=200)
-df["cell_id"] = beahiv.bng_to_cell(df["easting"], df["northing"], side_length=200)  # if already BNG
+df["cell_id"] = beahiv.lonlat_to_cell(df["lon"], df["lat"], size=200)
+df["cell_id"] = beahiv.bng_to_cell(df["easting"], df["northing"], size=200)  # if already BNG
 ```
 
 A GeoDataFrame of points to cells. The CRS must be 27700 or 4326:
 
 ```python
-gdf["cell_id"] = beahiv.point_to_cell(gdf, side_length=200)
+gdf["cell_id"] = beahiv.point_to_cell(gdf, size=200)
 ```
 
 Aggregate to a hex GeoDataFrame:
@@ -97,14 +113,14 @@ Cover a boundary with cells, so that empty cells show up as zeros:
 
 ```python
 boundary = area_gdf.to_crs(27700).union_all()  # polyfill needs EPSG:27700 Shapely geometry
-cells = pd.DataFrame({"cell_id": beahiv.polyfill(boundary, side_length=200)})
+cells = pd.DataFrame({"cell_id": beahiv.polyfill(boundary, size=200)})
 full = cells.merge(counts, on="cell_id", how="left").fillna({"n": 0})
 ```
 
 The `predicate` argument to `polyfill`/`bbox_fill`/`resize_cell` decides which cells are kept:
 `"overlap"` (any overlap, the default for `polyfill`/`bbox_fill`), `"centre"`/`"center"` (the
 cell centre is inside, the default for `resize_cell`) or `"full"` (wholly inside). To fill a
-bounding box without building a polygon, use `bbox_fill(minx, miny, maxx, maxy, side_length)`.
+bounding box without building a polygon, use `bbox_fill(minx, miny, maxx, maxy, size=..., measure=...)`.
 
 Neighbourhoods and smoothing:
 
@@ -117,8 +133,9 @@ beahiv.distance(cell_a, cell_b)  # hops; same grid only
 Change resolution:
 
 ```python
-beahiv.resize_cell(cell_id, new_side_length=50)  # any size, smaller or larger
-beahiv.get_children(cell_id)  # 7 cells at side_length/2 (needs even side_length)
+beahiv.resize_cell(cell_id, size=50)  # any size, smaller or larger; keeps the cell's measure
+beahiv.resize_cell(cell_id, size=100, measure=beahiv.Measure.EDGE_TO_EDGE)  # or switch measure
+beahiv.get_children(cell_id)  # 7 cells at half the size (needs an even size)
 beahiv.get_parents(cell_ids)  # array in: deduplicated union of 2x cells
 ```
 
@@ -128,17 +145,14 @@ Centres and decoding:
 beahiv.centroid(cell_id)  # Point in EPSG:27700
 beahiv.centroid(cell_id, lonlat=True)  # Point(lon, lat)
 beahiv.centroids(cell_ids, lonlat=True)  # list[Point | None], None for a missing/invalid id
-beahiv.decode(cell_id)  # CellIndex(q, r, side_length, orientation)
-beahiv.encode(q, r, side_length, Orientation.FLAT)
+beahiv.decode(cell_id)  # CellIndex(q, r, size, measure, orientation); .side_length is geometric
+beahiv.encode(q, r, size=200, orientation=Orientation.FLAT)
+beahiv.encode(q, r, size=200, measure=beahiv.Measure.EDGE_TO_EDGE)  # the id records the measure
 ```
 
 For plain coordinate columns rather than `Point`s, use `beahiv.batch.cell_centre_batch(ids)`,
 which returns `(x, y)` arrays, or `beahiv.batch.cell_to_lonlat_batch(ids)`, which returns
 `(lon, lat)` arrays.
-
-`encode_morton`/`decode_morton` produce Z-order ids with the same fields. They are useful as a
-sort or cluster key, for example DuckDB or Parquet ordering. Morton ids are not interchangeable
-with plain ids, and nothing can tell the two apart, so keep to one kind per column.
 
 ## DuckDB
 
@@ -148,7 +162,13 @@ Exchange geometry as WKB. For vectorised UDFs, use `type="arrow"` and pass the p
 import shapely
 from duckdb.sqltypes import BIGINT, BLOB, DOUBLE
 
-con.create_function("bh_cell", lambda x, y: beahiv.bng_to_cell(x, y, 200), [DOUBLE, DOUBLE], BIGINT, type="arrow")
+con.create_function(
+    "bh_cell",
+    lambda x, y: beahiv.bng_to_cell(x, y, size=200),
+    [DOUBLE, DOUBLE],
+    BIGINT,
+    type="arrow",
+)
 con.create_function(
     "bh_cell_polygon", lambda ids: shapely.to_wkb(beahiv.cell_polygons(ids)), [BIGINT], BLOB, type="arrow"
 )
@@ -160,7 +180,9 @@ The UDF has to return WKB as `BLOB` and be parsed with `ST_GeomFromWKB` in SQL, 
 can't cast a `BLOB` return to `GEOMETRY`. WKB carries no SRID, so set the CRS after the data
 arrives in Python.
 
-Bind `side_length`/`orientation` in the lambda rather than passing them as UDF arguments.
+Bind the size and `orientation` in the lambda rather than passing them as UDF arguments. If the
+size has to come from SQL, take the measure as a string equal to the Python keyword and forward it
+as `**{measure: size}`, so that a misspelt measure raises instead of being read as a side length.
 `bh_cell_polygon` raises if one chunk mixes grids, so use a per-row `cell_polygon` UDF if a
 column can do that.
 
@@ -170,9 +192,16 @@ column can do that.
 - `ValueError: points are in ... not EPSG:27700 or EPSG:4326`: reproject the GeoDataFrame first.
 - `ValueError: lonlat=... contradicts the declared CRS`: drop the `lonlat` argument and let the
   container's CRS decide.
-- `ValueError` from `decode`: the id is `INVALID_CELL_ID`, a Morton or foreign id, or corrupt.
-- `TypeError: cell ids must be integers, not floats`: the id column went through float64,
-  usually an int64 column that gained a `NaN`. Keep it `Int64`/Arrow `int64`.
-- `ValueError: ... requires a single side_length/orientation per call` or `distance requires both
-  cells to share ...`: ids from different grids were mixed.
+- `ValueError` from `decode`: the id is `INVALID_CELL_ID`, a foreign id, or corrupt.
+- `ValueError: size ... is not representable`: above 1,023 m; use one of the two sizes it names.
+- `ValueError: size must be in [3, 65472]`: the size is below the 3 m minimum (6 m for
+  `EDGE_TO_EDGE`) or above 65,472 m. `get_child`/`get_parent` raise this way too when half or
+  double the size would be.
+- `ValueError: ... reserved bits set`: usually an id from before the current layout. Regenerate it.
+- `TypeError: missing ... keyword-only argument`, `measure must be a Measure`, or `takes N
+  positional arguments`: pass `size=` (and optionally `measure=Measure.EDGE_TO_EDGE`), by
+  keyword.
+- `ValueError: ... requires a single size / size measure / orientation per call` or `distance
+  requires both cells to share ...`: ids from different grids were mixed.
+- `ValueError: no 0.5x size cell ... is odd`: `get_child`/`get_children` need an even size.
 - `TypeError` mentioning `centroids`/`centroid for one`: you used the singular form with an array, or the reverse.

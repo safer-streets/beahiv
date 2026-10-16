@@ -9,7 +9,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from beahiv import Orientation, bng_to_cell, cell_polygon, cell_polygons, lonlat_to_cell
+from beahiv import Measure, Orientation, bng_to_cell, cell_polygon, cell_polygons, lonlat_to_cell
 from beahiv.cell_id import INVALID_CELL_ID, ORIENTATION_SHIFT
 
 SIDE = 202
@@ -25,10 +25,13 @@ _BNG = ([530034.0, 429600.0], [180381.0, 434000.0])
 )
 def test_arrow_in_arrow_out(fn, a, b):
     """An Arrow array in gives an Arrow array back, with the same ids the numpy path produces."""
-    result = fn(pa.array(a), pa.array(b), SIDE, Orientation.FLAT)
+    result = fn(pa.array(a), pa.array(b), size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT)
 
     assert isinstance(result, pa.Array)
-    assert result.to_pylist() == fn(np.array(a), np.array(b), SIDE, Orientation.FLAT).tolist()
+    assert (
+        result.to_pylist()
+        == fn(np.array(a), np.array(b), size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT).tolist()
+    )
 
 
 @pytest.mark.parametrize(
@@ -40,10 +43,15 @@ def test_chunked_array_in_arrow_out(fn, a, b):
     chunked_a = pa.chunked_array([[a[0]], [a[1]]])
     chunked_b = pa.chunked_array([[b[0]], [b[1]]])
 
-    result = fn(chunked_a, chunked_b, SIDE, Orientation.FLAT)
+    result = fn(chunked_a, chunked_b, size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT)
 
     assert isinstance(result, pa.Array)
-    assert result.to_pylist() == fn(pa.array(a), pa.array(b), SIDE, Orientation.FLAT).to_pylist()
+    assert (
+        result.to_pylist()
+        == fn(
+            pa.array(a), pa.array(b), size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT
+        ).to_pylist()
+    )
 
 
 @pytest.mark.parametrize(
@@ -52,9 +60,18 @@ def test_chunked_array_in_arrow_out(fn, a, b):
 )
 def test_arrow_nulls_become_invalid_cell_id(fn, a, b):
     """A null coordinate arrives as NaN and maps to INVALID_CELL_ID, leaving its neighbours alone."""
-    result = fn(pa.array([a[0], None]), pa.array([b[0], None]), SIDE, Orientation.FLAT)
+    result = fn(
+        pa.array([a[0], None]),
+        pa.array([b[0], None]),
+        size=SIDE,
+        measure=Measure.EDGE_LENGTH,
+        orientation=Orientation.FLAT,
+    )
 
-    assert result.to_pylist() == [fn(a[0], b[0], SIDE, Orientation.FLAT), INVALID_CELL_ID]
+    assert result.to_pylist() == [
+        fn(a[0], b[0], size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT),
+        INVALID_CELL_ID,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -63,9 +80,13 @@ def test_arrow_nulls_become_invalid_cell_id(fn, a, b):
 )
 def test_numpy_and_scalar_returns_are_unchanged(fn, a, b):
     """Only Arrow input gets Arrow back: the numpy and scalar paths keep their existing types."""
-    assert isinstance(fn(np.array(a), np.array(b), SIDE, Orientation.FLAT), np.ndarray)
-    assert isinstance(fn(list(a), list(b), SIDE, Orientation.FLAT), np.ndarray)
-    assert isinstance(fn(a[0], b[0], SIDE, Orientation.FLAT), int)
+    assert isinstance(
+        fn(np.array(a), np.array(b), size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT), np.ndarray
+    )
+    assert isinstance(
+        fn(list(a), list(b), size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT), np.ndarray
+    )
+    assert isinstance(fn(a[0], b[0], size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT), int)
 
 
 @pytest.mark.parametrize(
@@ -78,7 +99,7 @@ def test_arrow_return_dtype_is_int64(fn, a, b):
     The reserved bits sit above the orientation bit, so no id reaches bit 63 and
     a signed int64/BIGINT column holds every one as-is.
     """
-    result = fn(pa.array(a), pa.array(b), SIDE, Orientation.FLAT)
+    result = fn(pa.array(a), pa.array(b), size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT)
 
     assert result.type == pa.int64()
     assert all(cell >> ORIENTATION_SHIFT & 1 for cell in result.to_pylist())  # FLAT sets it
@@ -89,7 +110,7 @@ def test_arrow_null_ids_decode_as_missing():
     """The other direction: a nullable BIGINT column (e.g. a DuckDB arrow UDF's input) reaches
     cell_polygons as an Arrow array, which numpy alone would turn into float64 and so round every
     id. Nulls come back as None, and the valid ids are exact."""
-    cell_id = bng_to_cell(_BNG[0][0], _BNG[1][0], SIDE, Orientation.FLAT)
+    cell_id = bng_to_cell(_BNG[0][0], _BNG[1][0], size=SIDE, measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT)
 
     for ids in (pa.array([cell_id, None, INVALID_CELL_ID]), pa.chunked_array([[cell_id], [None, INVALID_CELL_ID]])):
         polygons = cell_polygons(ids)

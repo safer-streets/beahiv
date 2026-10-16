@@ -7,6 +7,129 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## `measure` defaults to `EDGE_LENGTH`
+
+- **Why** — the user's call, reversing the "no default" decision in the entry below: requiring
+  `measure=` on every call was too verbose for the common case.
+- **What**
+  - Every public size-taking function's `measure` now defaults to `Measure.EDGE_LENGTH`, in
+    `cell_id`, `morton`, `geo`, `batch`, `points` and `polyfill`, scalar and batch alike.
+    `size` stays required. Internal `encode_size` keeps `measure` positional and required.
+  - Tests: the "requires size and measure" tests become "requires size" plus checks that the
+    default equals an explicit `EDGE_LENGTH`. The "refuses a measure that isn't a Measure" tests
+    are unchanged.
+  - README, SKILL.md and AGENTS.md describe the default. Doc examples drop a redundant
+    `measure=...EDGE_LENGTH`.
+- **Design decisions** — `resize_cell` keeps `measure=None` (the cell's own), not `EDGE_LENGTH`.
+  It already treats `orientation` that way instead of defaulting to `FLAT`, and resizing an
+  `EDGE_TO_EDGE` cell shouldn't silently switch lattice.
+
+## `size=` + `measure=` replace `side_length=` / `side_to_side=`
+
+- **Why** — the user preferred `size=X, measure=bh.Measure...` over two mutually exclusive size
+  keywords. Keeping `side_length` (journal, "Side-to-side cell sizing") was justified as
+  non-breaking, but the keyword-only change broke every caller anyway.
+- **What**
+  - [measure.py](src/beahiv/measure.py): `SizeMeasure` → `Measure`, members `SIDE_LENGTH` /
+    `SIDE_TO_SIDE` → `EDGE_LENGTH` / `EDGE_TO_EDGE` (the user's naming). Still 0 / 1, so the bit
+    layout and every existing id are unchanged.
+  - Every size-taking public function (`encode`, `encode_morton`, `encode_batch`,
+    `lonlat_to_cell`(`_batch`), the deprecated `latlon_to_cell`(`_batch`), `bng_to_cell`(`_batch`),
+    `point_to_cell`, `polyfill`, `bbox_fill`) now takes `*, size, measure, orientation=FLAT`, with
+    both `size` and `measure` required. `resize_cell` takes `size` plus `measure=None` (meaning the
+    cell's own measure), replacing `new_side_length` / `new_side_to_side`.
+  - `cell_id.resolve_size(size, measure)` now type-checks `measure` and coerces `size` with
+    `index`. The "exactly one" checks are gone, since a missing keyword is Python's own `TypeError`.
+  - Tests rewritten with an `ast`-based script (as before), plus hand edits for the
+    variable-dispatched calls. The "exactly one size" tests became "requires size and measure"
+    and "refuses a measure that isn't a Measure". Added a test for `resize_cell`'s default measure.
+  - README ("Size and measure" section, API table, DuckDB `bh_polyfill` now
+    `measure=bh.Measure[name]`, re-verified against DuckDB 1.5.5 in safer-streets-tooling's env),
+    SKILL.md and AGENTS.md updated to match.
+  - Docs only (the user's request): bit 52, the 53rd bit, is now named in the
+    [cell_id.py](src/beahiv/cell_id.py) and README bit-layout tables as reserved for future use,
+    likely a Morton flag. Bits 53–63 are listed separately as permanently zero.
+  - `encode_morton`/`decode_morton` removed from the public API (the user's call): no longer
+    exported from `beahiv` or in `__all__`, README API table or SKILL.md. `morton.py` and its
+    tests stay, as internal code. README gains a "Future enhancements" section describing Morton
+    ids as waiting on bit 52. SKILL.md's troubleshooting line claimed `decode` raises on a Morton
+    id; it doesn't (it decodes to a wrong cell), so that claim is gone with the rest.
+- **Design decisions**
+  - **`measure` has no default** (except in `resize_cell`): a default would make `size=200` the
+    implicit-measure call that the keyword-only change was meant to rule out.
+  - **Only real `Measure` members are accepted** rather than `Measure(x)`: both enums are 0/1
+    IntEnums, so conversion would let `1` or `Orientation.FLAT` select a lattice silently.
+  - **The version stays 0.1.0**: it hasn't been tagged or released yet, so this is part of the
+    same breaking release.
+- **Follow-ups**
+  - safer-streets-tooling and the notebook now need `size=`/`measure=` rather than just keyword
+    sizes.
+  - Morton: set bit 52 in `encode_morton`, have `validate_cell_id`/`decode_batch` refuse (or route)
+    flagged ids, then re-export.
+
+## 52-bit cell ids, exact as float64 (issue #9)
+
+- **Why** — An `int64` id that goes through a float64 (pandas adding a `NaN` to an int column, a
+  JS `JSON.parse`, a merge or reindex) came back rounded but still well-formed. It decoded to a
+  valid cell, up to 185 km away for a 1 km FLAT grid, with no error. Under the 64-bit layout this
+  couldn't be detected, because every q/r bit pattern is valid. #15 only caught floats that reached
+  beahiv, not ones that had already been turned back into ints.
+- **What**
+  - [cell_id.py](src/beahiv/cell_id.py): new layout, every id < 2**52 — reserved 12 (bits 52–63),
+    measure 1, orientation 1, size 12, q 19, r 19. `FLOAT_EXACT_BITS = 53` is asserted against.
+    The size is a binary float in 12 bits: a 3-bit exponent and a 9-bit mantissa, with
+    subnormals, so every metre up to 1,023 is exact, with 10 significant bits above that, up to
+    65,472 m (`pack_size`/`unpack_size`). `SIDE_LENGTH_MIN = 3` is a geometric side, so
+    `SIZE_MIN = (3, 6)` per measure.
+    `Q_OFFSET`/`R_OFFSET` are 260,000/160,000, not centred on zero.
+  - [morton.py](src/beahiv/morton.py): uses `pack_size`; interleaves 19/19 bits.
+  - [batch.py](src/beahiv/batch.py): `encode_batch` packs the size once. `decode_batch` mirrors
+    `unpack_size`/`SIZE_MIN` vectorised. Float id input is now *accepted*: integral floats below
+    2**53 are exact ids, NaN is missing, and any other float is an invalid row. This replaces #15's
+    `TypeError`.
+  - [hierarchy.py](src/beahiv/hierarchy.py): docs only. 2x/0.5x of a size is always a size.
+  - Tests: `test_cell_id.py` rewritten for the layout (exhaustive size packing, 2x/0.5x closure,
+    nearest-size error, size fields below the minimum, float exactness, old-layout ids rejected, the National Grid box at
+    the minimum size). New `tests/_sizes.py` draws representable sizes for the random-cell tests.
+    Hierarchy fixtures moved from `[2, 4, ...]` to `[12, 24, ...]`.
+  - README "Side length" and "Cell identifiers" rewritten, batch float paragraph; SKILL size rule,
+    float note, error list, old-ids item; AGENTS bit-budget item and batch-tolerance rule.
+- **Design decisions**
+  - **Make floats harmless rather than detect them.** The alternative was a check bit: bit 0
+    always 1, since every float64 ≥ 2**53 is even. That only turns silent corruption into a loud
+    error. Staying below 2**53 means a pandas or JSON round trip just works, and needs no API.
+    Strings (hex/base64) were rejected too: the user didn't want to complicate the public API, and
+    `int64` keeps the storage, join and Parquet benefits.
+  - **52 bits, not 53**, keeping bit 52 spare. With every bit below 2**53 spent, the next flag
+    (and #10 just needed one) would have to cost float safety or q/r bits. The cost is a 3 m
+    minimum instead of 2 m.
+  - **Binary-float size (3/9), after a decimal one.** The user first proposed 3 significant
+    *decimal* digits × 10^0..3 (3 m–999 km in 12 bits), and that was built first. It broke
+    `get_parents`/`get_children` for 1,200 sizes, because doubling 501 gives 1,002. The user
+    ruled that parents/children must work, so the exponent is binary: doubling only increments it.
+    Among the 12-bit splits, 3/9 keeps every metre to 1,023 exact. 4/8 and 5/7 waste range on
+    sizes thousands of km wide and lose exactness above 511 m and 255 m. The costs: a 65,472 m
+    maximum (500 km is gone), and round decimal sizes above about 10 km, such as 14.5 km and
+    25 km, aren't exact. Their nearest valid sizes are within 0.2%, and `pack_size`'s error names
+    them rather than rounding silently. 13 bits (3/10, 4 m minimum) and 14 bits (3/11, 5 m minimum)
+    were also offered.
+  - **Sizes below the minimum are rejected outright**, not left to fail q/r's range check only
+    away from the origin.
+  - **No margin around the National Grid box.** I first fitted the offsets to the box plus 50 km,
+    unprompted; the user questioned it. It never constrained anything: even at 3 m the offsets
+    leave over 300 km of room beyond every edge, so the test and docs now promise just the box.
+  - Bundled into #10's 0.1.0, which already requires regenerating every id (origin move), so
+    users migrate once.
+- **Follow-ups**
+  - Old ids: every old FLAT id (safer-streets-tooling's `beahiv202` grid is FLAT 202 m), every
+    old side-to-side id, and every old POINTY id with a side ≥ 512 m is rejected ("reserved
+    bits"). Old POINTY side-length ids under 512 m still decode, to the wrong cell. Measured:
+    100% of those decode. Spending bit 52 as a "new layout" marker would close most of that gap
+    (leaving old POINTY 512–1023 m), at the cost of the spare bit. The user chose to keep the bit free, so regenerating stored
+    ids is the migration, not detection.
+  - The R port still has the old layout.
+  - safer-streets-tooling: its 202 m grid is representable, but any stored ids must be regenerated.
+
 ## Batch functions tolerate missing/invalid cell ids
 
 - **Why** — `cell_polygons` on a nullable id column (pandas `Int64` with `<NA>`, via DuckDB)
@@ -47,6 +170,113 @@ Write the entry as part of the change, not after the fact.
 - **Follow-ups** — The pandas path is tested with a duck-typed stand-in (`_NullableColumn`),
   because pandas isn't a dev dependency. The real pandas/DuckDB path was checked by hand with
   `uv run --with pandas --with duckdb`. Polars Series take the `fill_null` path and are untested.
+
+## Rebase `ho-compat` (side-to-side, keyword-only sizes, origin) onto the lon/lat + skill release
+
+- **Why** — `main` gained PR #13 (WGS84 always `(lon, lat)`, `point_to_cell` WGS84 support,
+  `@deprecated` lat-first wrappers, the agent skill) while this branch was open.
+- **What**
+  - Keyword-only `side_length`/`side_to_side`/`orientation` applied to the new `lonlat_to_cell`,
+    `lonlat_to_cell_batch` and the deprecated `latlon_to_cell`/`latlon_to_cell_batch` wrappers.
+    The wrappers just forward to the `lonlat_*` versions.
+  - `point_to_cell`: size, orientation and `lonlat` are all keyword-only. WGS84 points go through
+    `lonlat_to_cell[_batch]` with the resolved size arguments.
+  - Tests from both sides merged and moved to `lonlat_*` with keyword sizes. The new side-to-side
+    tests use the lon-first API.
+  - [skill/SKILL.md](src/beahiv/skill/SKILL.md) rewritten for keyword-only sizes, `side_to_side`,
+    `SizeMeasure`, the new `CellIndex` fields, the origin move and the new error messages. The
+    sync test required `SizeMeasure` to be mentioned.
+  - README quickstart outputs recomputed. They were stale even on this branch: with the moved
+    origin, Trafalgar Square decodes to `q=706`, not 707. The API table shows keyword-only
+    signatures.
+- **Design decisions** — Version is 0.1.0, not the branch's 2.0.0: `main` had since renumbered
+  to 0.0.x ("(de)bump version"), and under 0.x a breaking change bumps the minor version. It was
+  1.0.0 for a while during review; the user set it back to 0.1.0. The pre-renumbering 1.0.1 was
+  never tagged or published, so 0.1.0 sorts after every real release (`v0.0.0`–`v0.0.2`).
+- **Follow-ups** — As before: safer-streets-tooling and the notebook need keyword sizes and
+  `lonlat_to_cell`.
+
+## Size and orientation arguments are keyword-only
+
+- **Why** — with two measures, a bare `bng_to_cell(x, y, 350)` hides which one 350 is. The user
+  asked for `f(x, y, *, side_length=None, side_to_side=None, orientation=FLAT)` everywhere.
+- **What**
+  - Keyword-only size/orientation (and `predicate`) on `encode`, `encode_morton`, `encode_batch`,
+    `latlon_to_cell`(`_batch`), `bng_to_cell`(`_batch`), `point_to_cell`, `polyfill`,
+    `bbox_fill`, `resize_cell` (`new_side_length`/`new_side_to_side`). Internal `encode_size`
+    stays positional — it takes an already-resolved measure, so nothing is implicit.
+  - Every call site in `src/`, `tests/` and README code blocks rewritten to keywords with an
+    `ast`-based script (not regex), plus the two variable-dispatched calls in `test_arrow.py` /
+    `test_geo.py` it couldn't see. New tests that a positional size raises `TypeError`.
+  - README DuckDB section: `bh_polyfill` takes the measure as a string equal to the Python keyword
+    and forwards `**{measure: size}`; closed-over UDFs name their keyword. Verified against real
+    DuckDB (spatial) in safer-streets-tooling's env, including a misspelt measure failing loudly.
+- **Design decisions**
+  - Included the `encode*` family, not just the geographic entry points: same ambiguity.
+  - DuckDB: one UDF with a measure-string argument over one UDF per measure — SQL stays explicit
+    and a bad measure is a Python `TypeError`, not a silent side length.
+- **Follow-ups**
+  - Breaking for every positional caller -- hence a breaking version bump (0.1.0 after the rebase onto main).
+  - safer-streets-tooling and the exploratory notebook still call positionally.
+
+## Side-to-side cell sizing, and a named grid origin (`ho-compat` branch)
+
+- **Why** — two requests: (1) let a cell's size be the distance between two parallel sides rather
+  than only the side length, recorded in the index itself; (2) the grid origin was an implicit
+  `(0, 0)` baked into the conversion formulas — name it in one place, since it may need to change.
+- **What**
+  - New [measure.py](src/beahiv/measure.py): `SizeMeasure` (`SIDE_LENGTH=0`, `SIDE_TO_SIDE=1`),
+    exported from `beahiv`.
+  - [cell_id.py](src/beahiv/cell_id.py): bit 61 becomes the measure bit (`MEASURE_BITS/SHIFT/MASK`),
+    `RESERVED_BITS` 3 → 2. `resolve_size(side_length, side_to_side)` enforces exactly one;
+    `encode_size(q, r, size, measure, orientation)` (size and its measure kept adjacent) is the resolved form internal callers use.
+    `CellIndex` fields are now `(q, r, size, measure, orientation)` -- measure next to the size it
+    qualifies, matching `encode_size`, and required (no default: a cell's measure is never implied)
+    -- with a `side_length` *property* giving the geometric side.
+  - Every size-taking public function gains keyword-only `side_to_side=` (`resize_cell`:
+    `new_side_to_side=`) and `side_length` becomes optional: `encode`, `encode_morton`,
+    `latlon_to_cell`, `bng_to_cell`, `point_to_cell`, `polyfill`, `bbox_fill`, `resize_cell`,
+    and in `batch.py` `encode_batch`, `latlon_to_cell_batch`, `bng_to_cell_batch`.
+  - [coords.py](src/beahiv/coords.py): `ORIGIN_X`/`ORIGIN_Y` (both `0.0`), applied in
+    `axial_to_cartesian`/`cartesian_to_axial` and imported by their batch mirrors; plus
+    `side_length_of(size, measure)`.
+  - `hierarchy.py`/`neighbours.py` carry `idx.measure` through; `distance` and
+    `cell_centre_batch` (so `cell_polygons`/`centroids`) reject mixed measures.
+  - `decode_batch` now returns 5 arrays: `(q, r, size, measure, orientation)`, matching `CellIndex`.
+  - Tests: new [tests/test_coords.py](tests/test_coords.py) (origin + inverse, scalar and batch);
+    side-to-side round trip / bit / geometry (edge-midpoint distance and area measured from
+    outside) / batch-parity / exactly-one-size tests across modules; hierarchy's random cells now
+    draw both measures so every existing hierarchy property covers side-to-side too.
+  - README (quickstart, new "Side length or side-to-side" section, origin in the axial formulas,
+    bit layout, API table) and AGENTS.md (module table, two new Developer Rules, bit-budget list).
+- **Design decisions**
+  - **Keep `side_length`, add `side_to_side` beside it** (the user's call), rather than renaming
+    to a neutral `size`: non-breaking for every existing positional/keyword call, which fits the
+    1.1.0 bump. `side_to_side` is keyword-only so it can't be confused positionally.
+  - **Measure 0 = side length**, so every id minted before this decodes bit-for-bit unchanged, and
+    the reserved bits still sit at the top (ids now < 2**62, still signed-int64 safe).
+  - **`CellIndex.side_length` became a geometric property rather than the stored field.** Every
+    geometry call site (`cell_polygon`, `_cell_centre`, the hierarchy tests' centroid checks) then
+    needed no change and is right for both measures, and downstream reads (`idx.side_length ==
+    200` in safer-streets-tooling) still hold for side-length cells. Cost: `CellIndex` construction
+    changes shape (new required `measure` in 4th position); nothing downstream constructs one.
+  - **Same `SIDE_LENGTH_MAX` cap on either measure**, applied to the stored size. The constants
+    kept their `SIDE_LENGTH_*` names (renaming them would churn tests and the reviewer checklist
+    for no behavioural gain); a comment says they now mean "size".
+  - **The origin is a code constant, not an id field** — there are only two free bits and an
+    origin needs far more; ids are simply only comparable between builds agreeing on it (stated in
+    the constant's comment, README and AGENTS.md). Hierarchy relations stay exact under any origin
+    because all grids share it. Mutation-checked: with the origin moved to (1000, 2000) the whole
+    suite still passes, i.e. nothing bypasses the four conversion functions.
+  - Size errors are `TypeError` (a missing/conflicting argument, as Python itself would raise);
+    range errors stay `ValueError`, their messages now saying "size" not "side_length".
+- **Follow-ups**
+  - `decode_batch`'s 4 → 5-tuple return is a (minor, non-exported) break for anyone unpacking it.
+  - The untracked R port (`R/cell_id.R`) still has the old 3-reserved-bit layout: it will reject
+    side-to-side ids as "reserved bits set" until it gains the measure bit.
+  - The origin has since been set to `(875/sqrt(3), 700/3)` (~(505.2, 233.3)), so every id is
+    re-mapped relative to 1.x -- 1.x ids must not be mixed with 2.0 ones. `test_cell_id`'s
+    full-GB-extent test should be re-read against the new origin's q/r headroom.
 
 ## Agent skill (`skill/SKILL.md`) and `beahiv-skill install|remove`
 

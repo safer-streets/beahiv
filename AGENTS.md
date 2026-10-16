@@ -17,10 +17,11 @@ The library is small enough to read in full; do that before extending it. Key mo
 | File | Role |
 | ---- | ---- |
 | [orientation.py](src/beahiv/orientation.py) | `Orientation` enum (POINTY/FLAT) — see the "Orientation" gotcha below |
-| [coords.py](src/beahiv/coords.py) | Scalar axial ↔ Cartesian (EPSG:27700 metres) conversion, cube-coordinate rounding |
-| [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex` |
+| [measure.py](src/beahiv/measure.py) | `Measure` enum (EDGE_LENGTH/EDGE_TO_EDGE) — what a cell's `size` measures |
+| [coords.py](src/beahiv/coords.py) | Scalar axial ↔ Cartesian (EPSG:27700 metres) conversion, cube-coordinate rounding; the grid origin (`ORIGIN_X`/`ORIGIN_Y`) and `side_length_of` |
+| [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex`; `resolve_size`/`encode_size` for the size arguments |
 | [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (array input gives the deduplicated union) |
-| [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality |
+| [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality. **Internal, not exported** until bit 52 flags Morton ids (README "Future enhancements"); don't re-export it before then |
 | [geo.py](src/beahiv/geo.py) | Public geographic interface: `lonlat_to_cell`, `bng_to_cell` (WGS84 ↔ EPSG:27700 ↔ cell id), plus `_cell_centre`, the scalar centre lookup behind `geometry.centroid` |
 | [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry, nothing stored: `cell_polygon`/`cell_polygons` → Shapely `Polygon`(s), `centroid`/`centroids` → Shapely `Point`(s) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
@@ -129,6 +130,25 @@ field) should get a directly corresponding test rather than being covered incide
   *different physical point* under each orientation, and the two only agree at `(0, 0)`. Never
   compare, reuse, or mix `q`/`r` (or cell ids) across orientations. See the docstrings in
   [coords.py](src/beahiv/coords.py) and [orientation.py](src/beahiv/orientation.py).
+- **Cell size is `size=` plus `measure=` (default `EDGE_LENGTH`), and the id records the
+  measure.** Every public size-taking function takes the pair — plus `orientation`, and
+  `predicate` where there is one — as keyword-only arguments (`f(x, y, *, size,
+  measure=Measure.EDGE_LENGTH, orientation=Orientation.FLAT)`). Don't add a positional form back.
+  The `EDGE_LENGTH` default is the user's call (it was briefly required); keep it the same on
+  every function, scalar and batch, as `orientation`'s `FLAT` is. The one exception is
+  `resize_cell`, whose `measure=None` means the source cell's own, like its `orientation=None`. It funnels them through `cell_id.resolve_size` → `(int, Measure)`, which
+  insists on a real `Measure` member: `Measure` and `Orientation` are both 0/1 IntEnums, so
+  `Measure(x)` would accept `1` or `Orientation.FLAT` without complaint. From there, keep the two
+  kinds of "size" apart: the stored integer (`CellIndex.size`, `encode_size`) is what encoding and
+  hierarchy arithmetic (`* 2`, `// 2`, parity) use; the geometric side (`CellIndex.side_length`,
+  `coords.side_length_of`, possibly irrational) is the only thing to pass to
+  `axial_to_cartesian`/`cartesian_to_axial` or vertex maths. Code holding a decoded `CellIndex`
+  re-encodes via `encode_size(q, r, idx.size, idx.measure, idx.orientation)` so the measure is carried, not re-decided. Like
+  orientation, EDGE_LENGTH and EDGE_TO_EDGE at the same number are different lattices.
+- **The grid origin is `coords.ORIGIN_X`/`ORIGIN_Y`, and nowhere else.**
+  `axial_to_cartesian`/`cartesian_to_axial` and their batch mirrors add/subtract it, and nothing
+  else should apply an offset of its own — every other module reaches Cartesian space through
+  those four. It isn't stored in ids, so changing it silently re-maps every existing id.
 - **Scalar and batch implementations are intentionally separate code, not one calling the other.**
   `batch.py` re-implements the same formulas from `coords.py`/`cell_id.py` in numpy rather than
   looping over the scalar functions, because single-point lookups meet a sub-microsecond target
@@ -139,16 +159,15 @@ field) should get a directly corresponding test rather than being covered incide
   equivalent but wasn't; `ty` doesn't catch it, only a same-orientation batch-vs-scalar test does.)
 - **Batch functions tolerate missing and invalid cell ids; scalar ones raise.** Every batch
   function taking cell ids goes through `batch._as_cell_id_array` then `decode_batch`, which
-  zeroes any row scalar `decode` would reject (null, `INVALID_CELL_ID`, reserved bits,
-  side_length out of range); `side_length == 0` is the validity mask downstream. The output
+  zeroes any row scalar `decode` would reject (null, `INVALID_CELL_ID`, reserved bits, an
+  invalid size field); `size == 0` is the validity mask downstream. The output
   carries the gap through rather than raising: NaN centres, `None` geometries, nothing added to
   a `get_parents`/`get_children` union. One bad row shouldn't cost a whole column, and the
   `*_to_cell` functions already turn missing input into `INVALID_CELL_ID` going the other way.
-  Errors in the *call* still raise — mixed grids, float ids. Never `np.asarray` an id column
-  directly: a pandas `Int64` Series or nullable Arrow array holding a null becomes float64,
-  which rounds every FLAT id (all >= 2**60). `_as_cell_id_array` fills nulls via
-  `fillna`/`fill_null` first, and rejects floats rather than decode a rounded id to the wrong
-  cell.
+  Errors in the *call* still raise — mixed grids. Float ids are accepted: every id is below
+  2**52, so a float64 holds it exactly (see the bit-budget item). `_as_cell_id_array` still fills
+  nulls via `fillna`/`fill_null` before numpy sees them, so a nullable integer column stays
+  integer rather than relying on that.
 - **`lonlat_to_cell` and `bng_to_cell` dispatch transparently on scalar vs array-like input.** A plain `int`/`float` takes the pure-Python path (no numpy import); anything else
   (`list`, `np.ndarray`, pandas `Series`, ...) dispatches to the `beahiv.batch` equivalent. This is
   implemented with `@overload` + `numpy.typing.ArrayLike`, not a `float | np.ndarray` union — a
@@ -197,15 +216,20 @@ When reviewing a PR or diff, check:
    `geometry.py`) has a matching change in `batch.py`, and vice versa, with a test that compares
    them directly (see `test_batch.py`'s `*_matches_scalar` tests) — not just independent test
    coverage of each.
-4. **Bit budget** — any change to `Q_BITS`/`R_BITS`/`SIDE_LENGTH_BITS`/`RESERVED_BITS` in
+4. **Bit budget** — any change to `Q_BITS`/`R_BITS`/`SIDE_LENGTH_BITS`/`MEASURE_BITS`/`RESERVED_BITS` in
    `cell_id.py` keeps the 64-bit total exact (there's an `assert` for this — don't relax it) and
-   re-validates the full-GB-extent-at-1m-resolution test in `test_cell_id.py`. Two invariants
-   ride on this layout and each has a test: the reserved bits stay at the most significant end
-   (so every id fits a *signed* int64), and `SIDE_LENGTH_MAX` stays at or below
-   `SIDE_LENGTH_MASK` — side_length is the one field whose limit is a range check rather than
-   its bit width, so an oversized value overflows into the orientation bit instead of being
-   masked off. Every encode path must check it, `encode_batch` included, and every decode path
-   must refuse to read an id carrying one — `cell_id.validate_cell_id` is the shared scalar check
+   re-validates `test_smallest_cell_indexes_the_national_grid` in `test_cell_id.py`.
+   The overriding invariant is that **every id stays below 2**53**, so a float64 holds it exactly
+   (`FLOAT_EXACT_BITS`, asserted, and `test_every_id_is_exact_as_a_float64`). This is what stops
+   an id that goes through pandas or JSON from coming back as a different, valid cell. Never
+   spend a reserved bit above bit 52 to make room for a feature: shrink q/r (raising
+   `SIDE_LENGTH_MIN`) instead. The size field is a binary float (3-bit exponent, 9-bit mantissa) chosen
+   so that 2x/0.5x of a size is always a size, which the hierarchy relies on. Don't swap it for a
+   decimal format: that was tried and broke the hierarchy for 1,200 sizes
+   (`test_doubling_and_halving_stay_representable`). Every field value is a size, but sizes below
+   `SIZE_MIN` aren't allowed, so every encode path
+   must go through `cell_id.pack_size`, `encode_batch` included, and every decode path
+   must refuse to read an invalid one — `cell_id.validate_cell_id` is the shared scalar check
    (`decode`, `decode_morton`), which raises, and `decode_batch` mirrors it vectorised, zeroing
    the row instead (see the batch-tolerance rule). The same applies to a non-zero reserved field:
    refusing it is what keeps those bits free to mean something later, so don't relax either path
@@ -278,10 +302,11 @@ src/
   beahiv/
     __init__.py       # public API surface (__all__) -- keep in sync with what's exported
     orientation.py     # Orientation enum (POINTY/FLAT)
+    measure.py         # Measure enum (EDGE_LENGTH/EDGE_TO_EDGE)
     coords.py          # scalar axial <-> Cartesian conversion
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
     hierarchy.py        # get_parent(s) / get_child(ren) -- 2x/0.5x side_length: same-centroid (singular) or overlapping (plural)
-    morton.py          # Z-order variant of encode/decode
+    morton.py          # Z-order variant of encode/decode -- internal until bit 52 flags Morton ids
     geo.py             # WGS84 <-> EPSG:27700 <-> cell id (lonlat_to_cell, bng_to_cell)
     geometry.py         # cell_polygon(s) -> Polygon(s), centroid(s) -> Point(s), generated on demand (needs Shapely)
     neighbours.py       # get_neighbours, distance, k_ring

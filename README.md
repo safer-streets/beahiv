@@ -119,12 +119,15 @@ import beahiv
 from beahiv import Orientation
 
 # Trafalgar Square, London, indexed on a 500m flat-top hex grid.
-cell_id = beahiv.lonlat_to_cell(-0.1278, 51.5074, side_length=500)
+cell_id = beahiv.lonlat_to_cell(-0.1278, 51.5074, size=500)
 
 beahiv.decode(cell_id)
-# CellIndex(q=707, r=-145, side_length=500, orientation=<Orientation.FLAT: 1>)
+# CellIndex(q=706, r=-145, size=500, measure=<Measure.EDGE_LENGTH: 0>, orientation=<Orientation.FLAT: 1>)
 
-beahiv.centroid(cell_id)  # POINT (530250 180566.3) in EPSG:27700 metres
+# ...or size cells by the distance between parallel edges instead (see "Size and measure")
+beahiv.lonlat_to_cell(-0.1278, 51.5074, size=500, measure=beahiv.Measure.EDGE_TO_EDGE)
+
+beahiv.centroid(cell_id)  # POINT (530005.2 180366.6) in EPSG:27700 metres
 beahiv.centroid(cell_id, lonlat=True)  # back to WGS84, as POINT (lon lat)
 beahiv.cell_polygon(cell_id)  # 6 vertices, generated on demand
 beahiv.get_neighbours(cell_id)  # 6 neighbouring cell ids
@@ -153,26 +156,32 @@ order is caught rather than silent: GB's latitude and longitude ranges
 don't overlap, so lat/lon passed the wrong way round fails the
 area-of-use check.
 
-### Side length
+### Cell size
 
-`side_length` must be a whole number of metres, not an index into a fixed
-resolution table -- unlike H3's 16 discrete resolutions, any integer
-satisfying `1 <= side_length <= 100,000` (`SIDE_LENGTH_MAX` in
-`cell_id.py`) is a valid grid to index against, in either orientation.
-`encode`/`encode_morton` raise `ValueError` outside that range:
-`side_length <= 0` isn't a size, and 100km is where cell sizes stop being
-meaningful units for Great Britain — a hexagon with a 100km side has an
-area of about 26,000km², larger than Wales.
+`size` must be a whole number of metres from **3 m to 65,472 m**, not
+an index into a fixed resolution table. Unlike H3's 16 discrete resolutions,
+there are 4,093 valid sizes: **every whole metre from 3 to 1,023**, then
+sizes with 10 significant *binary* digits — steps of 2 m up to 2,046 m, 4 m up
+to 4,092 m, and so on, doubling each time, to 64 m steps at the top. So 25 m,
+202 m, 350 m, 1 km, 1.5 km, 5 km and 10 km are all valid grids, in either
+orientation. 1,025 m and 14.5 km are not; the error names the nearest valid
+sizes (14,496 m and 14,512 m). `encode`/`encode_batch` raise
+`ValueError` for anything else.
 
-The cap is deliberately *below* what the 17-bit field could hold
-(`SIDE_LENGTH_MASK`, 131,071), so it is the range check and not the bit
-width that enforces it — an unchecked oversized value would overflow into
-the orientation bit rather than being harmlessly masked off. `encode`,
-`encode_morton` and `encode_batch` all check.
+Binary rather than round-decimal steps because then **2x and 0.5x of a valid
+size are always valid too** (while in range), so the parent/child lookups
+below always have a grid to go to. A decimal three-significant-digit size was
+tried first and broke that for 1,200 sizes (501 m → 1,002 m).
+
+Both limits come from the bit budget (see "Cell identifiers" below). The
+binary format is what lets the size fit 12 bits. The 3 m floor is the
+smallest cell whose q/r still cover the whole National Grid, so a smaller one
+is rejected outright rather than encoding near the origin and raising further
+out. For `EDGE_TO_EDGE` the floor is 6 m, a geometric side of at least 3 m.
 
 Two things this does *not* enforce:
 
-- **Whole metres only.** `side_length` must be an `int` -- a float such
+- **Whole metres only.** `size` must be an `int` -- a float such
   as `500.5` isn't rejected with a helpful message, it fails at the bit
   shift (`TypeError`, since Python won't `<<` a float) inside `encode`.
   Round or truncate before calling.
@@ -181,8 +190,8 @@ Two things this does *not* enforce:
   of a hierarchy, and this isn't fixed by choosing a "clean" ratio: a
   regular hexagon can't be exactly tiled by smaller regular hexagons of
   the same orientation for an *arbitrary* integer factor, the way a
-  square cleanly quarters for a quadtree. Picking `side_length=300` as
-  "3x" a `side_length=100` grid doesn't produce 9 small cells per big
+  square cleanly quarters for a quadtree. Picking `size=300` as
+  "3x" a `size=100` grid doesn't produce 9 small cells per big
   cell either -- most straddle the big cell's boundary instead of
   nesting inside it. Mixing side lengths in one dataset is fine as long
   as each cell id carries its own (which it does, by construction), but
@@ -190,6 +199,42 @@ Two things this does *not* enforce:
   lengths.
 - **Same-centroid 2x/0.5x lookups are the one exception** -- see
   "Parent/child at 2x/0.5x `side_length`" below.
+
+### Size and measure
+
+Every function that takes a cell size takes it as two **keyword-only**
+arguments: `size=` (required) and `measure=`, which says what that number
+measures and defaults to `Measure.EDGE_LENGTH`. Leave out `size`, or pass a
+`measure` that isn't a `Measure`, and it raises `TypeError`. There is
+deliberately no positional form (`orientation` and `predicate` are
+keyword-only too):
+
+- `Measure.EDGE_LENGTH` (the default) — `size` is the length of one edge.
+- `Measure.EDGE_TO_EDGE` — `size` is the distance between two opposite,
+  parallel edges, which is `sqrt(3)` edge lengths.
+
+```python
+beahiv.bng_to_cell(530034, 180381, size=200)  # 200m edges, the same as measure=beahiv.Measure.EDGE_LENGTH
+beahiv.bng_to_cell(530034, 180381, size=200, measure=beahiv.Measure.EDGE_TO_EDGE)  # 200m across, edge ~115.5m
+```
+
+`measure` is a plain value, so it can be passed through a function or a
+config like any other argument. A plain `0`/`1` is refused rather than
+converted: `Measure` and `Orientation` are both 0/1 enums, so converting would
+let `measure=Orientation.FLAT` through as `EDGE_TO_EDGE` without a word.
+
+Either way the stored size follows the same rules (whole metres, 3 m to
+65,472 m, 10 significant bits above 1,023 m), and which one it measures is recorded in the cell id
+itself (the measure bit, below) — so everything downstream of an id
+(`decode`, geometry, neighbours, hierarchy) needs no size arguments at all,
+and an edge-to-edge cell's relatives are edge-to-edge cells. `CellIndex`
+carries both halves: `size` is the stored value and `measure` the
+`Measure` it is in, while `CellIndex.side_length` is the *geometric*
+side length they imply (`size` itself for an `EDGE_LENGTH` cell).
+The two measures are different lattices even at the same number, like the
+two orientations: never compare q/r across them. `resize_cell` is the one
+exception to the default: there `measure` defaults to the source cell's own
+(as `orientation` does), and either may be overridden.
 
 ### Parent/child at 2x/0.5x `side_length`
 
@@ -208,12 +253,13 @@ partner, or nothing -- pure parity arithmetic, no geometry, a cheap way
 to ask whether a cell happens to line up exactly with the 2x/0.5x grid:
 
 ```python
-cell_id = beahiv.encode(4, -6, 100)
+cell_id = beahiv.encode(4, -6, size=100)
 parent = beahiv.get_parent(cell_id)  # side_length=200, same centroid
 child = beahiv.get_child(cell_id)  # side_length=50, same centroid
 assert beahiv.get_child(parent) == cell_id
 
-beahiv.get_parent(beahiv.encode(3, -6, 100))  # None -- odd q, no same-centroid parent
+odd_q = beahiv.encode(3, -6, size=100)
+beahiv.get_parent(odd_q)  # None -- odd q, no same-centroid parent
 ```
 
 **`get_parents`/`get_children`** return every cell at the target
@@ -222,7 +268,7 @@ exists and always covers the cell, and is what you want when resizing by
 a factor of two:
 
 ```python
-beahiv.get_parents(beahiv.encode(3, -6, 100))  # the 2 straddled 200m cells
+beahiv.get_parents(beahiv.encode(3, -6, size=100))  # the 2 straddled 200m cells
 beahiv.get_parents(cell_id)  # 1 -- an even-q/r cell lies wholly inside its same-centroid parent
 beahiv.get_children(cell_id)  # 7 x 50m: the same-centroid child, plus its k_ring of 1
 ```
@@ -263,12 +309,20 @@ a `side_length` (metres) and an `orientation`:
   edges are horizontal.
 
 ```python
-x = side_length * sqrt(3) * (q + r / 2)  # POINTY
-y = 1.5 * side_length * r
+x = x0 + side_length * sqrt(3) * (q + r / 2)  # POINTY
+y = y0 + 1.5 * side_length * r
 
-x = 1.5 * side_length * q  # FLAT
-y = side_length * sqrt(3) * (r + q / 2)
+x = x0 + 1.5 * side_length * q  # FLAT
+y = y0 + side_length * sqrt(3) * (r + q / 2)
 ```
+
+`side_length` here is the geometric one (`size / sqrt(3)` for an
+`EDGE_TO_EDGE` cell). `(x0, y0)` is the grid origin — the EPSG:27700 point
+axial `(0, 0)` centres on, shared by every size, orientation and measure.
+It is `ORIGIN_X`/`ORIGIN_Y` in `coords.py`, the single place it is defined
+for both the scalar and batch paths. It is *not* stored in
+cell ids, so changing it re-maps every existing id to a different place:
+ids are only comparable between builds that agree on it.
 
 Cartesian → axial is the inverse of these formulas followed by standard
 cube-coordinate rounding — this is what guarantees an exact, deterministic
@@ -276,37 +330,57 @@ cell for every point, with no ambiguity at cell boundaries.
 
 ### Cell identifiers
 
-Every cell is a single 64-bit integer, reversible with no lookup table:
+Every cell is a single integer, reversible with no lookup table, and
+always **below `2**52`**:
 
 ```text
-bits 63-61  reserved      3 bits   always zero
-bit 60      orientation   1 bit    0 = POINTY, 1 = FLAT
-bits 59-43  side_length  17 bits   whole metres, 1..100,000
-bits 42-22  q (offset)   21 bits   q + Q_OFFSET
-bits 21-0   r (offset)   22 bits   r + R_OFFSET
+bits 63-53  reserved     11 bits   always zero, permanently (see "Why 52 bits")
+bit 52      reserved      1 bit    always zero for now; kept for future use, likely a Morton flag
+bit 51      measure       1 bit    0 = EDGE_LENGTH, 1 = EDGE_TO_EDGE
+bit 50      orientation   1 bit    0 = POINTY, 1 = FLAT
+bits 49-38  size         12 bits   3-bit binary exponent, 9-bit mantissa
+bits 37-19  q (offset)   19 bits   q + Q_OFFSET
+bits 18-0   r (offset)   19 bits   r + R_OFFSET
 ```
 
-The three reserved bits sit at the most significant end, which means every
-cell id is below `2**61` and so fits a **signed** 64-bit integer. Every
-array of ids beahiv returns (numpy or Arrow) is `int64`, never `uint64`, so
-consumers can store ids in a plain `BIGINT` column rather than needing an
-unsigned type or a hex string. No `encode` path sets the reserved bits, and
-`decode` *rejects* an id carrying one rather than ignoring it — that
-strictness is what keeps the bits free to be given a meaning later, since a
-decoder that quietly masked unknown bits off could never start honouring one.
+**Why 52 bits.** float64 holds every integer below `2**53` exactly, so an id
+that passes through a float comes back unchanged. That happens all the time
+without anyone asking: pandas turns an `int64` column into `float64` the
+moment it gains a `NaN`, and JavaScript's `JSON.parse` reads every number as
+a double. Under the earlier 64-bit layout such an id came back rounded but
+still well-formed, so it decoded to a valid cell up to hundreds of
+kilometres away, with no error. Now there is nothing to detect: the round
+trip is exact. The ids still go in a plain `int64`/`BIGINT` column; every
+array of ids beahiv returns (numpy or Arrow) is `int64`, never `uint64`.
 
-`side_length` is stored directly as a literal metre value rather than an
-index into a resolution table, so any grid spacing that fits the bit
-budget is usable without registering it anywhere first. q/r are stored
-offset-biased (shifted into an unsigned range) so both fields decode with
-plain arithmetic and no sign handling. 21/22 bits per axial coordinate is
-sized generously: even at a **1 metre** side length — far finer than
-typically needed — the whole British National Grid extent (700km ×
-1300km) indexes fully, in both orientations, with room to spare.
+**Reserved bits.** Bit 52, the 53rd bit, is reserved for future use, most
+likely to flag a Morton-coded id (see "Future enhancements") so that `decode`
+can tell the two apart. It is the only one that may ever be given a meaning; setting any bit
+above it would push ids past `2**53` and bring the problem back. No `encode`
+path sets it, and `decode` *rejects* an id with any reserved bit set rather
+than ignoring it — that strictness is what keeps the bit free to be given a
+meaning later, since a decoder that quietly masked unknown bits off could
+never start honouring one.
 
-An optional Morton-coded variant (`encode_morton` / `decode_morton`) packs
-the same fields but bit-interleaves q/r for spatial locality, useful for
-DuckDB clustering, Parquet sort-order pruning, and range scans.
+**Size.** A tiny binary float, as in IEEE 754. Exponent 0 stores the
+mantissa as-is (0–511 m). Exponent `e` ≥ 1 stores `(512 + mantissa) << (e - 1)`,
+a 10-bit significand with an implicit leading bit. Each size has exactly one
+encoding and every field value is a size, so the only invalid size fields are
+those below the 3 m minimum.
+
+**q/r.** 19 bits each, stored with an offset (`Q_OFFSET`, `R_OFFSET`) so both
+fields decode with plain arithmetic and no sign handling. The offsets aren't
+centred on zero: they put the National Grid box (700 km × 1300 km) near the
+middle of both fields at the 3 m minimum, in both orientations, because GB lies
+entirely north-east of the grid origin. That leaves over 300 km of room beyond
+every edge of the box, even at 3 m.
+
+**Ids from earlier layouts** (0.0.x, or an untagged pre-renumbering 1.0.1
+build) are not compatible. `decode` rejects every old FLAT id, every old side-to-side (now `EDGE_TO_EDGE`) id and
+every old POINTY id with a side of 512 m or more, as "reserved bits set". Old
+POINTY side-length ids with smaller sides fall inside the new range and
+decode to a different cell. Regenerate stored ids from their coordinates
+rather than mixing them.
 
 ### Neighbours, distance, rings
 
@@ -369,7 +443,7 @@ pass a list, a numpy array, or a pandas Series and get one back
 (`centroid` is scalar-only; its array form is `centroids`):
 
 ```python
-cell_ids = beahiv.lonlat_to_cell(lons, lats, side_length=500)  # lons/lats: array-like
+cell_ids = beahiv.lonlat_to_cell(lons, lats, size=500)  # lons/lats: array-like
 ```
 
 A plain scalar still takes the pure-Python path with no numpy import and
@@ -380,7 +454,7 @@ for callers who want an unambiguous vectorised call:
 ```python
 from beahiv.batch import lonlat_to_cell_batch, bng_to_cell_batch, cell_to_lonlat_batch
 
-cell_ids = lonlat_to_cell_batch(lons, lats, side_length=500)
+cell_ids = lonlat_to_cell_batch(lons, lats, size=500)
 ```
 
 A missing coordinate (`NaN`) is an absent point rather than an error: it
@@ -393,7 +467,7 @@ rather than an error:
 
 | Function | Missing/invalid row gives |
 | --- | --- |
-| `batch.decode_batch` | all-zero `(q, r, side_length, orientation)` — `side_length == 0` is the mask |
+| `batch.decode_batch` | all-zero `(q, r, size, measure, orientation)` — `size == 0` is the mask |
 | `batch.cell_centre_batch`, `batch.cell_to_lonlat_batch` | `NaN` |
 | `cell_polygons`, `centroids` | `None` |
 | `get_parents`, `get_children` (array input) | nothing — the id adds no cells to the union |
@@ -402,12 +476,11 @@ Only the scalar functions (`decode`, `cell_polygon`, `centroid`, ...) still
 raise for a bad id. Mixing grids still raises in the batch functions too:
 that is a mistake in the call, not a gap in the data.
 
-Ids must stay integers. A float64 array holds only 53 bits exactly, and a FLAT
-id is above 2**60, so an id that has been through a float is already the wrong
-cell — the batch functions raise `TypeError` for float input rather than
-decode it. The usual way to get one is an int64 column gaining a `NaN`; keep
-nullable ids as pandas `Int64` or Arrow `int64` instead, which are read
-without going through float.
+A float column of ids is fine. Every id is below `2**52`, so one that has
+been through a float64 (an `int64` column that gained a `NaN`, a JSON number)
+is still exact, and decodes to the right cell. `NaN` is a missing row. A float
+that can't be an id (non-integral, infinite, or `2**53` or above) is treated as
+invalid like any other bad row.
 
 The scalar functions take numpy integers as well as `int`, so a single id
 picked out of a batch result (or read from a pandas column, or a DuckDB
@@ -440,7 +513,7 @@ Nulls arrive as `NaN` and so encode to `INVALID_CELL_ID`:
 ```python
 import pyarrow as pa
 
-cell_ids = beahiv.bng_to_cell(pa.array(xs), pa.array(ys), side_length=202)
+cell_ids = beahiv.bng_to_cell(pa.array(xs), pa.array(ys), size=202)
 ```
 
 This is what makes beahiv usable as a vectorised UDF in an Arrow-native
@@ -449,7 +522,7 @@ query engine (DuckDB, Polars), where a per-row Python call would dominate:
 ```python
 con.create_function(
     "beahiv_cell",
-    lambda x, y: beahiv.bng_to_cell(x, y, 202),
+    lambda x, y: beahiv.bng_to_cell(x, y, size=202),
     [DOUBLE, DOUBLE],
     BIGINT,
     type="arrow",
@@ -477,7 +550,7 @@ Point data usually arrives as a single geometry column rather than as
 separate x and y sequences. `point_to_cell` takes that column directly:
 
 ```python
-gdf["cell_id"] = beahiv.point_to_cell(gdf, side_length=202)
+gdf["cell_id"] = beahiv.point_to_cell(gdf, size=202)
 ```
 
 It accepts a `GeoDataFrame` (its active geometry column is used), a
@@ -493,8 +566,8 @@ points:
 
 | | |
 | --- | --- |
-| `point_to_cell(gdf, 202)` | 50 ms |
-| `bng_to_cell(gdf.geometry.x, gdf.geometry.y, 202)` | 89 ms |
+| `point_to_cell(gdf, side_length=202)` | 50 ms |
+| `bng_to_cell(gdf.geometry.x, gdf.geometry.y, side_length=202)` | 89 ms |
 
 Missing (`None`) and empty points encode to `INVALID_CELL_ID`, as NaN
 coordinates do elsewhere. A non-point geometry raises rather than
@@ -507,7 +580,7 @@ or WGS84 `Point(lon, lat)` — the x/y order `centroid(lonlat=True)` returns.
 A `GeoDataFrame` or `GeoSeries` says which through its `.crs`:
 
 ```python
-beahiv.point_to_cell(gdf, side_length=202)  # gdf.crs is EPSG:27700 or EPSG:4326
+beahiv.point_to_cell(gdf, size=202)  # gdf.crs is EPSG:27700 or EPSG:4326
 ```
 
 Any other declared CRS raises rather than being silently misread — WGS84
@@ -523,7 +596,7 @@ so there is nothing to infer a CRS *from*. A `Point`, list or ndarray (or a
 `lonlat=True`:
 
 ```python
-beahiv.point_to_cell(Point(-0.1246, 51.5007), side_length=202, lonlat=True)
+beahiv.point_to_cell(Point(-0.1246, 51.5007), size=202, lonlat=True)
 ```
 
 Passing a `lonlat` that contradicts a declared CRS raises. WGS84 input
@@ -543,7 +616,7 @@ spatial joins:
 
 ```python
 # polygon must be in EPSG:27700
-cell_ids = beahiv.polyfill(polygon, side_length=500, orientation=Orientation.FLAT)
+cell_ids = beahiv.polyfill(polygon, size=500, orientation=Orientation.FLAT)
 ```
 
 `predicate` (default `"overlap"`) controls what counts as covering,
@@ -556,32 +629,30 @@ arbitrary polygon, `beahiv.bbox_fill` is a thin convenience wrapper —
 same `predicate` semantics, no need to build a Shapely `Polygon` first:
 
 ```python
-cell_ids = beahiv.bbox_fill(minx, miny, maxx, maxy, side_length=500, orientation=Orientation.FLAT)
+cell_ids = beahiv.bbox_fill(minx, miny, maxx, maxy, size=500, orientation=Orientation.FLAT)
 ```
 
 For resizing a cell you already have -- covering its hexagon with cells
-at a different `side_length` -- `beahiv.resize_cell` is seeded by the
+at a different size -- `beahiv.resize_cell` is seeded by the
 cell's own outline (`cell_polygon`) instead of an arbitrary polygon:
 
 ```python
-finer = beahiv.resize_cell(cell_id, new_side_length=50)  # a finer covering
-coarser = beahiv.resize_cell(cell_id, new_side_length=500)  # a coarser covering -- also permitted
+finer = beahiv.resize_cell(cell_id, size=50)  # a finer covering
+coarser = beahiv.resize_cell(cell_id, size=500)  # a coarser covering -- also permitted
 ```
 
-`new_side_length` may be smaller or larger than `cell_id`'s own
-`side_length` -- both directions are ordinary `polyfill` calls against
+`size` may be smaller or larger than `cell_id`'s own size -- both directions are ordinary `polyfill` calls against
 the cell's polygon, same `predicate` semantics. This is the general,
 geometry-based replacement for `get_parents`/`get_children` (previous
 section): unlike those it isn't restricted to a factor of two, doesn't
 require an even `q`/`r`/`side_length`, and always returns *something*
 covering the cell.
 
-`orientation` defaults to `cell_id`'s own orientation, but can be
-overridden to cover the cell with a grid of the other orientation
-instead:
+`measure` and `orientation` default to `cell_id`'s own, but either can be
+overridden to cover the cell with a grid of another family instead:
 
 ```python
-beahiv.resize_cell(cell_id, new_side_length=50, orientation=Orientation.FLAT)
+beahiv.resize_cell(cell_id, size=50, measure=beahiv.Measure.EDGE_TO_EDGE, orientation=Orientation.FLAT)
 ```
 
 ### DuckDB spatial
@@ -601,10 +672,14 @@ con.execute("INSTALL spatial;LOAD spatial;")
 
 con.create_function(
     "bh_polyfill",
-    lambda wkb, side_length, orientation, predicate: bh.polyfill(
-        shapely.from_wkb(wkb), side_length, bh.Orientation(orientation), predicate
+    lambda wkb, measure, size, orientation, predicate: bh.polyfill(
+        shapely.from_wkb(wkb),
+        size=size,
+        measure=bh.Measure[measure],
+        orientation=bh.Orientation(orientation),
+        predicate=predicate,
     ),
-    [GEOMETRY, BIGINT, BIGINT, VARCHAR],
+    [GEOMETRY, VARCHAR, BIGINT, BIGINT, VARCHAR],
     duckdb.list_type(BIGINT),
 )
 con.create_function(
@@ -616,7 +691,7 @@ con.create_function(
 )
 con.create_function(
     "bh_point_to_cell",
-    lambda x, y: bh.bng_to_cell(x, y, side_length, bh.Orientation.POINTY),
+    lambda x, y: bh.bng_to_cell(x, y, size=size, measure=bh.Measure.EDGE_TO_EDGE, orientation=bh.Orientation.POINTY),
     [DOUBLE, DOUBLE],
     BIGINT,
     type="arrow",
@@ -627,15 +702,22 @@ con.create_function(
 `cell_polygon`) — about 2x faster than the per-row form on a 15k-cell
 polyfill, and the reason to spend the `type="arrow"` declaration. It
 inherits `cell_polygons`' restriction that every id in a call shares one
-`side_length` and `orientation`, which holds for the output of a single
+size, `orientation` and measure, which holds for the output of a single
 `polyfill` but would raise on a column mixing grids; use the per-row
 `cell_polygon` if a query can do that. A `NULL` (or `0`) id gives a `NULL`
 geometry.
 
 `bh_polyfill` stays per-row: it consumes one boundary polygon per call and
 returns a list, so there is nothing to vectorise. `bh_point_to_cell` binds
-`side_length`/`orientation` rather than declaring them as parameters, for the
+the size/`orientation` rather than declaring them as parameters, for the
 `ChunkedArray` reason given above.
+
+SQL has no enums, so `bh_polyfill` takes the measure as the member's name
+(`'EDGE_LENGTH'` or `'EDGE_TO_EDGE'`) and looks it up with `bh.Measure[measure]`:
+one UDF covers both measures, the SQL call site stays explicit
+(`bh_polyfill(geom, 'EDGE_TO_EDGE', 350, ...)`), and a misspelt measure fails
+with a `KeyError` rather than being read as an edge length. The closed-over
+`bh_point_to_cell` just names its measure. `bh_cell_polygon` needs nothing: the measure travels in the id.
 
 And to use duckdb for spatial computations and query the results into a geopandas `GeoDataFrame`, adapt the pattern in
 the example below, which generates BEAHIV cells within a boundary polygon:
@@ -647,13 +729,13 @@ beahiv_cells = gpd.GeoDataFrame.from_arrow(
     con.sql(
         """
         WITH c AS (
-            SELECT unnest(bh_polyfill(geom, ?, ?, 'centre')) AS spatial_id
+            SELECT unnest(bh_polyfill(geom, 'EDGE_TO_EDGE', ?, ?, 'centre')) AS spatial_id
             FROM boundary_table
             WHERE name = ?
         )
         SELECT spatial_id, ST_GeomFromWKB(bh_cell_polygon(spatial_id)) AS geometry FROM c
         """,
-        params=(side_length, bh.Orientation.POINTY, boundary_name),
+        params=(size, bh.Orientation.POINTY, boundary_name),
     ).arrow()
 ).set_crs("epsg:27700")
 ```
@@ -671,6 +753,18 @@ The CRS is set on arrival rather than carried through: beahiv is EPSG:27700
 throughout and WKB has nowhere to put an SRID, so nothing upstream of
 `set_crs` knows the units are British National Grid metres.
 
+## Future enhancements
+
+**Morton (Z-order) ids.** A variant id that packs the same fields but
+bit-interleaves q/r, so spatially close cells get numerically close ids —
+useful for DuckDB clustering, Parquet sort-order pruning and range scans. The
+encoding is implemented and tested internally (`beahiv.morton`), but it is not
+part of the public API yet: nothing in the id says it is Morton-coded, so
+`decode` — and everything built on it — would read one as a different, valid
+cell without raising. The plan is to set the reserved bit 52 on Morton ids, so
+plain-id functions can refuse them (or decode them correctly), before
+exporting `encode_morton`/`decode_morton`.
+
 ## Testing
 
 ```bash
@@ -680,7 +774,10 @@ uv run pytest
 Property tests cover:
 
 - **Round trip** — `decode(encode(q, r, s, o)) == (q, r, s, o)` for random
-  and boundary coordinates, including the 1m/full-GB-extent case above.
+  and boundary coordinates, including the corners of the National Grid box
+  at the 3 m minimum, in both orientations.
+- **Float exactness** — every id survives `int(float(id))` unchanged,
+  including the largest the fields allow.
 - **Neighbour symmetry** — if B is a neighbour of A, A is a neighbour of B.
 - **Area equality** — random cells all have identical area, matching
   `A = (3√3/2)s²`, within 1e-9 relative tolerance.
@@ -691,13 +788,14 @@ Property tests cover:
 
 | Function | Description |
 | --- | --- |
-| `encode(q, r, side_length, orientation)` | Build a cell id |
-| `decode(cell_id)` | Recover `CellIndex(q, r, side_length, orientation)`; raises for any id `encode` couldn't have produced |
+| `encode(q, r, *, size, measure=EDGE_LENGTH, orientation=FLAT)` | Build a cell id. Every size-taking function below takes `size` and `measure` the same way |
+| `decode(cell_id)` | Recover `CellIndex(q, r, size, measure, orientation)`; raises for any id `encode` couldn't have produced |
+| `Measure` | `EDGE_LENGTH` / `EDGE_TO_EDGE` — what a cell's `size` measures |
 | `INVALID_CELL_ID` | The all-zero sentinel emitted for missing input — scalar `decode` raises for it; the batch functions give a missing value |
-| `lonlat_to_cell(lon, lat, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow). Raises outside EPSG:27700's area of use (lon −9.01–2.01, lat 49.75–61.01) |
-| `latlon_to_cell(lat, lon, side_length, orientation)` | Deprecated lat-first spelling of `lonlat_to_cell` |
-| `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow). No bounds check: any (x, y) within the bit budget encodes |
-| `point_to_cell(points, side_length, orientation, *, lonlat=None)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700, or WGS84 `Point(lon, lat)` via a declared EPSG:4326 or `lonlat=True` |
+| `lonlat_to_cell(lon, lat, *, size, measure, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow). Raises outside EPSG:27700's area of use (lon −9.01–2.01, lat 49.75–61.01) |
+| `latlon_to_cell(lat, lon, *, size, measure, orientation)` | Deprecated lat-first spelling of `lonlat_to_cell` |
+| `bng_to_cell(x, y, *, size, measure, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow). No bounds check: any (x, y) within the bit budget encodes |
+| `point_to_cell(points, *, size, measure, orientation, lonlat=None)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700, or WGS84 `Point(lon, lat)` via a declared EPSG:4326 or `lonlat=True` |
 | `centroid(cell_id, *, lonlat=False)` | Cell centre as a Shapely `Point` — EPSG:27700 (default), or WGS84 as `Point(lon, lat)` (`lonlat=True`) |
 | `centroids(cell_ids, *, lonlat=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out (`None` for a missing/invalid id) |
 | `cell_polygon(cell_id)` | Cell outline as a Shapely `Polygon`, in EPSG:27700 |
@@ -709,8 +807,7 @@ Property tests cover:
 | `get_child(cell_id)` | Cell at `side_length / 2` sharing this cell's exact centroid — always `(2q, 2r)`; single id only |
 | `get_parents(cell_id)` | Every cell at 2x `side_length` overlapping this one — 1 if it nests exactly, else the 2 it straddles; array input gives the deduplicated union, skipping missing/invalid ids |
 | `get_children(cell_id)` | Every cell at `side_length / 2` overlapping this one — always 7, covering it with 75% overspill; array input gives the deduplicated union, skipping missing/invalid ids |
-| `encode_morton` / `decode_morton` | Z-order variant of `encode`/`decode` |
-| `polyfill(polygon, side_length, orientation, predicate)` | Every cell id covering a Shapely polygon |
-| `bbox_fill(minx, miny, maxx, maxy, side_length, orientation, predicate)` | Every cell id covering an axis-aligned bounding box |
-| `resize_cell(cell_id, new_side_length, orientation, predicate)` | Every `new_side_length` cell id covering `cell_id`'s hexagon -- smaller or larger than its own `side_length` |
+| `polyfill(polygon, *, size, measure, orientation, predicate)` | Every cell id covering a Shapely polygon |
+| `bbox_fill(minx, miny, maxx, maxy, *, size, measure, orientation, predicate)` | Every cell id covering an axis-aligned bounding box |
+| `resize_cell(cell_id, *, size, measure=None, orientation=None, predicate)` | Every `size` cell id covering `cell_id`'s hexagon -- smaller or larger than its own; `measure`/`orientation` default to the cell's |
 
