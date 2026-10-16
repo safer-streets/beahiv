@@ -9,7 +9,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from beahiv import Orientation, bng_to_cell, lonlat_to_cell
+from beahiv import Orientation, bng_to_cell, cell_polygon, cell_polygons, lonlat_to_cell
 from beahiv.cell_id import INVALID_CELL_ID, ORIENTATION_SHIFT
 
 SIDE = 202
@@ -83,3 +83,15 @@ def test_arrow_return_dtype_is_int64(fn, a, b):
     assert result.type == pa.int64()
     assert all(cell >> ORIENTATION_SHIFT & 1 for cell in result.to_pylist())  # FLAT sets it
     assert all(cell > 0 for cell in result.to_pylist())
+
+
+def test_arrow_null_ids_decode_as_missing():
+    """The other direction: a nullable BIGINT column (e.g. a DuckDB arrow UDF's input) reaches
+    cell_polygons as an Arrow array, which numpy alone would turn into float64 and so round every
+    id. Nulls come back as None, and the valid ids are exact."""
+    cell_id = bng_to_cell(_BNG[0][0], _BNG[1][0], SIDE, Orientation.FLAT)
+
+    for ids in (pa.array([cell_id, None, INVALID_CELL_ID]), pa.chunked_array([[cell_id], [None, INVALID_CELL_ID]])):
+        polygons = cell_polygons(ids)
+        assert polygons[1:] == [None, None]
+        assert polygons[0] == cell_polygon(cell_id)

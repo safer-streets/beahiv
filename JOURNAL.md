@@ -7,6 +7,47 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Batch functions tolerate missing/invalid cell ids
+
+- **Why** — `cell_polygons` on a nullable id column (pandas `Int64` with `<NA>`, via DuckDB)
+  raised "reserved bits set". The null wasn't the only problem: `np.asarray` turned the whole
+  column into float64, which rounded the valid FLAT ids too, so the error came from a corrupted
+  *valid* id. The request was that every batch function tolerate missing/invalid ids.
+- **What**
+  - [src/beahiv/batch.py](src/beahiv/batch.py): `_as_cell_id_array` coerces ids to int64 with
+    nulls as `INVALID_CELL_ID` (`fillna`/`fill_null` before numpy, an object-array path for
+    `None`/`NA`/oversized ints, a list path, and float input rejected with `TypeError`).
+    `decode_batch` now zeroes rejected rows instead of raising. `_cell_centres` backs
+    `cell_centre_batch` (NaN for bad rows, single-grid check over valid rows only) and
+    `cell_polygons`. `cell_to_lonlat_batch` masks too, since pyproj turns NaN into `inf`.
+    `CellIdsLike` type alias, because `ArrayLike` rejects `list[int | None]`.
+  - [src/beahiv/geometry.py](src/beahiv/geometry.py): `cell_polygons`/`centroids` return
+    `list[Polygon | None]`/`list[Point | None]`, built with `shapely.polygons`/`shapely.points`.
+  - [src/beahiv/hierarchy.py](src/beahiv/hierarchy.py): array `get_parents`/`get_children` skip bad ids.
+  - Tests in `test_batch.py`, `test_geometry.py`, `test_hierarchy.py`, `test_arrow.py`. The old
+    "batch raises what scalar raises" tests now assert the same ids are *zeroed*.
+  - README, SKILL.md, and AGENTS.md (a new batch-tolerance rule; reviewer item 4 reworded).
+- **Design decisions**
+  - `None`, not an empty `Polygon`, for a bad row. geopandas reads `None` as missing (`isna()`,
+    a null in Parquet), and `shapely.to_wkb(None)` is a null, so a DuckDB UDF maps `NULL` in to
+    `NULL` out. An empty polygon is a real geometry: `dropna()` keeps it and it writes as
+    `POLYGON EMPTY`. The cost is the `| None` in the return type, which typed callers must narrow.
+  - The tolerance covers every id scalar `decode` rejects, not only nulls and the sentinel. The
+    output row is missing either way. A reserved-bit id is still refused, never decoded, so
+    those bits stay free for a future meaning.
+  - `decode_batch` keeps its 4-tuple and marks bad rows with all zeros, the same fields that
+    `INVALID_CELL_ID` itself decodes to, rather than adding a mask return that would break callers.
+  - Float ids raise, which is the opposite of tolerating them. A float64 id above 2**53 has
+    already lost bits and would decode to a valid but wrong cell, silently. All-NaN/0 float input
+    is allowed, because it holds no id to have damaged.
+  - Scalar functions still raise. Mixed grids in one batch still raise, because that is an error
+    in the call rather than a gap in the data. The encode-direction guards (`lonlat_to_cell_batch`
+    area of use, `encode_batch` q/r range) are unchanged: NaN input was already tolerated, and the
+    area-of-use error is what catches swapped lon/lat.
+- **Follow-ups** — The pandas path is tested with a duck-typed stand-in (`_NullableColumn`),
+  because pandas isn't a dev dependency. The real pandas/DuckDB path was checked by hand with
+  `uv run --with pandas --with duckdb`. Polars Series take the `fill_null` path and are untested.
+
 ## Agent skill (`skill/SKILL.md`) and `beahiv-skill install|remove`
 
 - **Why** — Agents working in downstream projects (safer-streets-core, -tooling, notebooks) kept

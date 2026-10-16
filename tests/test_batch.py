@@ -140,34 +140,110 @@ def test_decode_batch_matches_scalar_decode():
         assert idx.orientation == do[i]
 
 
-def test_decode_batch_rejects_what_scalar_decode_rejects():
-    """Scalar/batch parity applies to the rejection contract, not just the arithmetic."""
-    valid = encode(4, -6, 100)
-    rejected = [
-        valid | (0b101 << RESERVED_SHIFT),  # reserved bits set
-        valid & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT),  # side_length 0
-        valid & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT) | ((SIDE_LENGTH_MAX + 1) << SIDE_LENGTH_SHIFT),
-        INVALID_CELL_ID,
-    ]
-
-    for cell_id in rejected:
-        with pytest.raises(ValueError):
-            decode(cell_id)  # scalar rejects it ...
-        with pytest.raises(ValueError):
-            decode_batch(np.array([valid, cell_id], dtype=np.uint64))  # ... so the batch must too
-        # ... including when the ids arrive as plain Python ints rather than a typed array.
-        # Regression: ids at or above 2**63 don't fit the int64 the batch path now uses, and numpy
-        # raised OverflowError from the conversion instead of the ValueError the contract promises.
-        with pytest.raises(ValueError):
-            decode_batch([valid, cell_id])
+_VALID = encode(4, -6, 100, Orientation.FLAT)
+_REJECTED = [
+    _VALID | (0b101 << RESERVED_SHIFT),  # reserved bits set, including bit 63
+    _VALID & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT),  # side_length 0
+    _VALID & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT) | ((SIDE_LENGTH_MAX + 1) << SIDE_LENGTH_SHIFT),
+    INVALID_CELL_ID,
+]
 
 
-def test_decode_batch_reports_the_sentinel_by_name():
-    """The overwhelmingly likely cause of a bad id in a batch is an unfiltered missing-input
-    sentinel, so the error says so rather than only quoting an out-of-range side_length."""
-    cell_ids = np.array([encode(4, -6, 100), INVALID_CELL_ID], dtype=np.uint64)
-    with pytest.raises(ValueError, match="INVALID_CELL_ID"):
+@pytest.mark.parametrize("cell_id", _REJECTED)
+def test_decode_batch_zeroes_what_scalar_decode_rejects(cell_id):
+    """Scalar/batch parity on *which* ids are bad, not on what happens to them: scalar raises,
+    batch zeroes the row, so one bad id doesn't cost the rest of the column."""
+    with pytest.raises(ValueError):
+        decode(cell_id)
+
+    expected = (4, -6, 100, Orientation.FLAT)
+    # as uint64, and as plain Python ints -- ids at or above 2**63 fit neither int64 nor the float64
+    # numpy would infer for such a list, so this also covers the list path's object fallback
+    for cell_ids in (np.array([_VALID, cell_id], dtype=np.uint64), [_VALID, cell_id]):
+        q, r, side_length, orientation = decode_batch(cell_ids)
+        assert (q[0], r[0], side_length[0], orientation[0]) == expected
+        assert (q[1], r[1], side_length[1], orientation[1]) == (0, 0, 0, 0)
+
+
+def test_decode_batch_zeroes_missing_values():
+    """None/NaN in an object array, and Python ints too big for int64, are missing rather than errors."""
+    cell_ids = np.array([_VALID, None, np.nan, 2**64, "junk"], dtype=object)
+    _, _, side_length, _ = decode_batch(cell_ids)
+    assert side_length.tolist() == [100, 0, 0, 0, 0]
+    assert decode_batch([None, _VALID])[2].tolist() == [0, 100]
+
+
+class _NullableColumn:
+    """Stands in for a pandas `Int64` Series holding `<NA>`, without importing pandas: numpy only
+    sees it as float64 (which has already rounded every id), and only `fillna` gets it to int64
+    intact."""
+
+    def __init__(self, values):
+        self.values = values
+
+    def __array__(self, dtype=None, copy=None):
+        return np.array([np.nan if v is None else float(v) for v in self.values])
+
+    def fillna(self, value):
+        return np.array([value if v is None else v for v in self.values], dtype=np.int64)
+
+
+def test_nullable_columns_are_filled_before_numpy_sees_them():
+    """Regression: a pandas Int64 column with a null went through float64 and came out with its
+    reserved bits apparently set (a rounded FLAT id), failing a decode it should have passed."""
+    assert int(np.asarray(_NullableColumn([_VALID]))[0]) != _VALID  # the precision loss being avoided
+
+    q, r, side_length, _ = decode_batch(_NullableColumn([_VALID, None]))
+
+    assert side_length.tolist() == [100, 0]
+    assert (q[0], r[0]) == (4, -6)
+
+
+@pytest.mark.parametrize(
+    "cell_ids",
+    [
+        np.array([float(_VALID), np.nan]),
+        [float(_VALID), None],
+        np.array([float(_VALID)], dtype=object),
+    ],
+)
+def test_float_ids_raise_rather_than_decode_wrong(cell_ids):
+    """A FLAT id is >= 2**60, far past float64's 53 exact bits, so one that has been through a float
+    is the wrong cell -- which tolerance would turn into a silently wrong answer."""
+    with pytest.raises(TypeError, match="not floats"):
         decode_batch(cell_ids)
+
+
+def test_all_missing_floats_are_tolerated():
+    """A float column with nothing in it but NaN/0 has no id to have damaged."""
+    assert decode_batch(np.array([np.nan, 0.0]))[2].tolist() == [0, 0]
+    assert decode_batch([])[2].tolist() == []
+
+
+def test_cell_centre_batch_gives_nan_for_invalid_ids():
+    cell_ids = [INVALID_CELL_ID, _VALID, None, _REJECTED[0]]
+
+    x, y = batch.cell_centre_batch(cell_ids)
+    lon, lat = cell_to_lonlat_batch(cell_ids)
+
+    assert (x[1], y[1]) == centroid(_VALID).coords[0]
+    assert (lon[1], lat[1]) == pytest.approx(centroid(_VALID, lonlat=True).coords[0])
+    # NaN, not the inf pyproj makes of a NaN input
+    for column in (x, y, lon, lat):
+        assert np.isnan(column[[0, 2, 3]]).all()
+
+
+def test_cell_centre_batch_on_nothing_valid_is_all_nan():
+    x, y = batch.cell_centre_batch([INVALID_CELL_ID, None])
+    assert np.isnan(x).all()
+    assert np.isnan(y).all()
+
+
+def test_invalid_ids_dont_count_towards_the_single_grid_rule():
+    """A zeroed row reads as side_length 0 / POINTY, which must not look like a second grid."""
+    batch.cell_centre_batch([encode(1, 1, 300, Orientation.FLAT), INVALID_CELL_ID])  # doesn't raise
+    with pytest.raises(ValueError, match="single side_length"):
+        batch.cell_centre_batch([encode(1, 1, 300), INVALID_CELL_ID, encode(1, 1, 200)])
 
 
 def test_decode_batch_accepts_an_empty_array():

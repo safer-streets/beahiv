@@ -112,9 +112,11 @@ def test_centroids_matches_scalar_centroid():
 
     bng = centroids(np.array(cell_ids))
     wgs84 = centroids(np.array(cell_ids), lonlat=True)
-    for i, cell_id in enumerate(cell_ids):
-        assert bng[i].coords[0] == pytest.approx(centroid(cell_id).coords[0])
-        assert wgs84[i].coords[0] == pytest.approx(centroid(cell_id, lonlat=True).coords[0])
+    for cell_id, bng_point, wgs84_point in zip(cell_ids, bng, wgs84, strict=True):
+        assert bng_point is not None
+        assert wgs84_point is not None
+        assert bng_point.coords[0] == pytest.approx(centroid(cell_id).coords[0])
+        assert wgs84_point.coords[0] == pytest.approx(centroid(cell_id, lonlat=True).coords[0])
 
 
 def test_centroid_points_are_x_y_ordered_so_lon_comes_first():
@@ -129,7 +131,9 @@ def test_centroid_points_are_x_y_ordered_so_lon_comes_first():
     point = centroid(cell_id, lonlat=True)
     assert point.x == pytest.approx(-3.1883, abs=0.01)  # lon
     assert point.y == pytest.approx(55.9533, abs=0.01)  # lat
-    assert centroids([cell_id], lonlat=True)[0].coords[0] == pytest.approx(point.coords[0])
+    (batch_point,) = centroids([cell_id], lonlat=True)
+    assert batch_point is not None
+    assert batch_point.coords[0] == pytest.approx(point.coords[0])
 
 
 def test_centroid_rejects_array_input_by_name():
@@ -156,7 +160,7 @@ def test_centroids_rejects_scalar_input_by_name():
         with pytest.raises(TypeError, match="centroid for one"):
             centroids(arg)
 
-    assert centroids([cell_id])[0].coords[0] == centroid(cell_id).coords[0]
+    assert centroids([cell_id]) == [centroid(cell_id)]
 
 
 def test_bng_to_cell_dispatches_transparently_to_array_input():

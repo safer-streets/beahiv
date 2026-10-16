@@ -31,7 +31,9 @@ past `SIDE_LENGTH_MAX` likewise raises, from `encode`.
 `get_parent`/`get_child` take a scalar cell id only. `get_parents`/`get_children` also accept an
 array-like of ids, and return the union -- one flat, sorted int64 array of every overlapping cell,
 each once. Neighbouring inputs share most of their parents and children, and the covering of a set
-of cells is what array callers want, not a ragged array of tuples.
+of cells is what array callers want, not a ragged array of tuples. Missing and invalid ids in an
+array contribute nothing to the union rather than raising, like every other batch function; a
+scalar one still raises, from `decode`.
 """
 
 from collections.abc import Iterable
@@ -39,13 +41,13 @@ from itertools import chain
 from typing import SupportsIndex, TypeGuard, cast, overload
 
 import numpy as np
-from numpy.typing import ArrayLike
 
+from .batch import CellIdsLike, _as_cell_id_array, decode_batch
 from .cell_id import decode, encode
 from .neighbours import k_ring
 
 
-def _is_scalar_id(cell_id: SupportsIndex | ArrayLike) -> TypeGuard[SupportsIndex]:
+def _is_scalar_id(cell_id: SupportsIndex | CellIdsLike) -> TypeGuard[SupportsIndex]:
     """`np.isscalar` as a type guard: a single cell id, rather than an array-like of them.
 
     Only the narrowing is added -- a type checker can't see through numpy's plain `bool` return, so
@@ -60,9 +62,14 @@ def _unique_ids(groups: Iterable[tuple[int, ...]]) -> np.ndarray:
     return np.unique(np.fromiter(chain.from_iterable(groups), dtype=np.int64))
 
 
-def _get_parents_array(cell_ids: ArrayLike) -> np.ndarray:
-    ids = np.asarray(cell_ids).ravel()
-    return _unique_ids(_get_parents_scalar(cell_id) for cell_id in ids)
+def _valid_ids(cell_ids: CellIdsLike) -> np.ndarray:
+    """The ids `decode` would accept, flattened -- missing and invalid ones are dropped, not raised."""
+    ids = _as_cell_id_array(cell_ids).ravel()
+    return ids[decode_batch(ids)[2] > 0]
+
+
+def _get_parents_array(cell_ids: CellIdsLike) -> np.ndarray:
+    return _unique_ids(_get_parents_scalar(cell_id) for cell_id in _valid_ids(cell_ids))
 
 
 def _get_parents_scalar(cell_id: SupportsIndex) -> tuple[int, ...]:
@@ -88,9 +95,8 @@ def _get_parents_scalar(cell_id: SupportsIndex) -> tuple[int, ...]:
             )
 
 
-def _get_children_array(cell_ids: ArrayLike) -> np.ndarray:
-    ids = np.asarray(cell_ids).ravel()
-    return _unique_ids(_get_children_scalar(cell_id) for cell_id in ids)
+def _get_children_array(cell_ids: CellIdsLike) -> np.ndarray:
+    return _unique_ids(_get_children_scalar(cell_id) for cell_id in _valid_ids(cell_ids))
 
 
 def _get_children_scalar(cell_id: SupportsIndex) -> tuple[int, ...]:
@@ -116,21 +122,22 @@ def get_parent(cell_id: SupportsIndex) -> int | None:
 @overload
 def get_parents(cell_id: SupportsIndex) -> tuple[int, ...]: ...
 @overload
-def get_parents(cell_id: ArrayLike) -> np.ndarray: ...
-def get_parents(cell_id: SupportsIndex | ArrayLike) -> tuple[int, ...] | np.ndarray:
+def get_parents(cell_id: CellIdsLike) -> np.ndarray: ...
+def get_parents(cell_id: SupportsIndex | CellIdsLike) -> tuple[int, ...] | np.ndarray:
     """Return the ids of every cell at 2x side_length overlapping this cell.
 
     Returns the 1 cell containing this one when q and r are both even -- a cell sharing a 2x cell's
     centroid lies wholly inside it -- and otherwise the 2 cells this one straddles. Never empty.
 
     Accepts either a single cell id or an array-like of ids; array input returns a flat, sorted
-    int64 array of every cell overlapping any of them, with duplicates dropped.
+    int64 array of every cell overlapping any of them, with duplicates dropped, and missing or
+    invalid ids skipped.
 
     Raises ValueError if doubling side_length would exceed SIDE_LENGTH_MAX.
     """
     if _is_scalar_id(cell_id):
         return _get_parents_scalar(cell_id)
-    return _get_parents_array(cast("ArrayLike", cell_id))
+    return _get_parents_array(cast("CellIdsLike", cell_id))
 
 
 def get_child(cell_id: SupportsIndex) -> int:
@@ -151,18 +158,19 @@ def get_child(cell_id: SupportsIndex) -> int:
 @overload
 def get_children(cell_id: SupportsIndex) -> tuple[int, ...]: ...
 @overload
-def get_children(cell_id: ArrayLike) -> np.ndarray: ...
-def get_children(cell_id: SupportsIndex | ArrayLike) -> tuple[int, ...] | np.ndarray:
+def get_children(cell_id: CellIdsLike) -> np.ndarray: ...
+def get_children(cell_id: SupportsIndex | CellIdsLike) -> tuple[int, ...] | np.ndarray:
     """Return the ids of every cell at side_length / 2 overlapping this cell.
 
     Always 7: the same-centroid `get_child` plus the 6 partially contained cells ringing it. Their
     union covers this cell, and overspills it by 75% of its area.
 
     Accepts either a single cell id or an array-like of ids; array input returns a flat, sorted
-    int64 array of every cell overlapping any of them, with duplicates dropped.
+    int64 array of every cell overlapping any of them, with duplicates dropped, and missing or
+    invalid ids skipped.
 
     Raises ValueError if side_length is odd -- there is no 0.5x grid at all.
     """
     if _is_scalar_id(cell_id):
         return _get_children_scalar(cell_id)
-    return _get_children_array(cast("ArrayLike", cell_id))
+    return _get_children_array(cast("CellIdsLike", cell_id))

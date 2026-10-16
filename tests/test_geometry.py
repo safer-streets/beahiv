@@ -3,7 +3,7 @@ import random
 import numpy as np
 import pytest
 
-from beahiv import Orientation, cell_polygon, cell_polygons, centroid, encode
+from beahiv import INVALID_CELL_ID, Orientation, cell_polygon, cell_polygons, centroid, centroids, encode
 from beahiv.coords import cartesian_to_axial
 
 from ._geom_helpers import hex_area, point_in_polygon_with_tolerance, polygon_area
@@ -74,6 +74,30 @@ def test_cell_polygons_accepts_an_array_of_ids():
     cell_ids = [encode(q, -3, 250) for q in range(5)]
 
     assert cell_polygons(np.array(cell_ids, dtype=np.uint64)) == cell_polygons(cell_ids)
+
+
+def test_cell_polygons_gives_none_for_missing_and_invalid_ids():
+    """Bad rows become None in place, so the result still lines up with the input row for row."""
+    valid = [encode(q, -3, 250) for q in range(3)]
+    cell_ids = [valid[0], INVALID_CELL_ID, valid[1], None, valid[2] | (1 << 61)]
+
+    polygons = cell_polygons(cell_ids)
+
+    assert len(polygons) == len(cell_ids)
+    assert [p is None for p in polygons] == [False, True, False, True, True]
+    assert polygons[0] == cell_polygon(valid[0])
+    assert polygons[2] == cell_polygon(valid[1])
+    assert cell_polygons([INVALID_CELL_ID, None]) == [None, None]
+
+
+def test_centroids_gives_none_for_missing_and_invalid_ids():
+    valid = encode(4, -6, 100)
+
+    for lonlat in (False, True):
+        points = centroids([None, valid, INVALID_CELL_ID], lonlat=lonlat)
+        assert points[0] is None
+        assert points[2] is None
+        assert points[1] == centroid(valid, lonlat=lonlat)
 
 
 def test_cell_polygons_rejects_mixed_orientation():
