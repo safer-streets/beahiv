@@ -158,17 +158,23 @@ area-of-use check.
 
 ### Side length
 
-`side_length` must be a whole number of metres with **at most three
-significant digits**, from **3 m to 999 km** — not an index into a fixed
-resolution table. Unlike H3's 16 discrete resolutions, there are 3,699 valid
-sizes: every whole metre from 3 to 999, then steps of 10 m to 9,990 m, of
-100 m to 99,900 m, and of 1 km to 999 km. So 25 m, 202 m, 1.5 km, 14.5 km and
-500 km are all valid grids, in either orientation; 1,234 m is not (use 1,230
-or 1,240). `encode`/`encode_morton`/`encode_batch` raise `ValueError` for
-anything else.
+`side_length` must be a whole number of metres from **3 m to 65,472 m**, not
+an index into a fixed resolution table. Unlike H3's 16 discrete resolutions,
+there are 4,093 valid sizes: **every whole metre from 3 to 1,023**, then
+sizes with 10 significant *binary* digits — steps of 2 m up to 2,046 m, 4 m up
+to 4,092 m, and so on, doubling each time, to 64 m steps at the top. So 25 m,
+202 m, 350 m, 1 km, 1.5 km, 5 km and 10 km are all valid grids, in either
+orientation. 1,025 m and 14.5 km are not; the error names the nearest valid
+sizes (14,496 m and 14,512 m). `encode`/`encode_morton`/`encode_batch` raise
+`ValueError` for anything else.
 
-Both limits come from the bit budget (see "Cell identifiers" below). Three
-significant digits is what lets the size fit 12 bits. The 3 m floor is the
+Binary rather than round-decimal steps because then **2x and 0.5x of a valid
+size are always valid too** (while in range), so the parent/child lookups
+below always have a grid to go to. A decimal three-significant-digit size was
+tried first and broke that for 1,200 sizes (501 m → 1,002 m).
+
+Both limits come from the bit budget (see "Cell identifiers" below). The
+binary format is what lets the size fit 12 bits. The 3 m floor is the
 smallest cell whose q/r still cover the whole National Grid, so a smaller one
 is rejected outright rather than encoding near the origin and raising further
 out. For `side_to_side` the floor is 6 m, a geometric side of at least 3 m.
@@ -210,8 +216,8 @@ beahiv.bng_to_cell(530034, 180381, side_length=200)  # 200m sides
 beahiv.bng_to_cell(530034, 180381, side_to_side=200)  # 200m across, side ~115.5m
 ```
 
-Either way the stored size follows the same rules (whole metres, three
-significant digits, up to 999 km), and which one it measures is recorded in the cell id
+Either way the stored size follows the same rules (whole metres, 3 m to
+65,472 m, 10 significant bits above 1,023 m), and which one it measures is recorded in the cell id
 itself (the measure bit, below) — so everything downstream of an id
 (`decode`, geometry, neighbours, hierarchy) needs no size arguments at all,
 and a side-to-side cell's relatives are side-to-side cells. `CellIndex`
@@ -324,7 +330,7 @@ always **below `2**52`**:
 bits 63-52  reserved     12 bits   always zero
 bit 51      measure       1 bit    0 = side length, 1 = side-to-side
 bit 50      orientation   1 bit    0 = POINTY, 1 = FLAT
-bits 49-38  size         12 bits   2-bit decimal exponent, 10-bit mantissa
+bits 49-38  size         12 bits   3-bit binary exponent, 9-bit mantissa
 bits 37-19  q (offset)   19 bits   q + Q_OFFSET
 bits 18-0   r (offset)   19 bits   r + R_OFFSET
 ```
@@ -346,10 +352,11 @@ than ignoring it — that strictness is what keeps the bit free to be given a
 meaning later, since a decoder that quietly masked unknown bits off could
 never start honouring one.
 
-**Size.** `mantissa × 10^exponent`, mantissa 1..999 and exponent 0..3 (see
-"Side length" above). Each size has exactly one encoding, the one with the
-smallest exponent, and `decode` rejects the others (500 m as `50 × 10¹`),
-so a cell can't have two ids.
+**Size.** A tiny binary float, as in IEEE 754. Exponent 0 stores the
+mantissa as-is (0–511 m). Exponent `e` ≥ 1 stores `(512 + mantissa) << (e - 1)`,
+a 10-bit significand with an implicit leading bit. Each size has exactly one
+encoding and every field value is a size, so the only invalid size fields are
+those below the 3 m minimum.
 
 **q/r.** 19 bits each, stored with an offset (`Q_OFFSET`, `R_OFFSET`) so both
 fields decode with plain arithmetic and no sign handling. The offsets aren't

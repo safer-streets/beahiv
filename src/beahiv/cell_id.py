@@ -5,7 +5,7 @@ Bit layout (MSB to LSB)::
     [63..52]  reserved     12 bits  (always zero)
     [51]      measure       1 bit   (see SizeMeasure)
     [50]      orientation   1 bit   (see Orientation)
-    [49..38]  size         12 bits  (2-bit decimal exponent, 10-bit mantissa)
+    [49..38]  size         12 bits  (3-bit binary exponent, 9-bit mantissa)
     [37..19]  q_enc        19 bits  (q + Q_OFFSET)
     [18..0]   r_enc        19 bits  (r + R_OFFSET)
 
@@ -24,12 +24,19 @@ free -- a decoder that ignored unknown bits could never start honouring one. Mor
 are still indistinguishable, so decoding one with the wrong function yields wrong q/r rather than
 an error; the spare bit is the obvious candidate if that ever needs fixing.
 
-The size is a whole number of metres with at most three significant digits: `mantissa * 10 **
-exponent`, mantissa 1..999 and exponent 0..3. That spans 3m to 999km in 12 bits -- 25m, 1.5km, 14.5km
-and 500km are all representable, 1234m is not -- where storing the metres directly needed 17 bits
-for less range. Each size has exactly one encoding, the one with the smallest exponent, so a
-mantissa below 100 with a non-zero exponent is rejected; otherwise 500m could be stored as either
-500e0 or 50e1, giving one cell two ids.
+The size is a whole number of metres stored as a small binary float, the way IEEE 754 does it:
+exponent 0 holds the mantissa as-is (0..511 metres, the "subnormal" range), and exponent e >= 1 holds
+`(512 + mantissa) << (e - 1)`, a 10-bit significand with an implicit leading bit. So every whole
+metre from 1 to 1023 is representable, then sizes with 10 significant bits up to 1023 << 6 = 65,472m
+-- 1000m, 1500m, 2000m, 5000m and 10km all are, 1025m and 25km (2**3 * 3125) are not. Storing the
+metres directly needed 17 bits for less range.
+
+Binary rather than decimal because the factor-of-two hierarchy (`get_parent(s)`/`get_child(ren)`)
+then always has a grid to go to: doubling a size only increments the exponent, and halving an even
+one only decrements it (or halves the mantissa), so 2x and 0.5x are representable whenever they are
+in range. A decimal three-significant-digit field, tried first, broke that for 1,200 sizes (501 ->
+1002). The format also gives every size exactly one encoding and every field value a size, so
+there are no non-canonical patterns to reject -- only a size below SIZE_MIN.
 
 The measure bit says what the size measures: the length of a side (0) or the distance between two
 parallel sides (1). Callers choose with the mutually exclusive `side_length` / `side_to_side`
@@ -97,16 +104,16 @@ RESERVED_MASK = (1 << RESERVED_BITS) - 1
 Q_OFFSET = 260_000
 R_OFFSET = 160_000
 
-SIZE_MANTISSA_BITS = 10
+SIZE_MANTISSA_BITS = 9
+SIZE_EXPONENT_BITS = SIDE_LENGTH_BITS - SIZE_MANTISSA_BITS
 SIZE_MANTISSA_MASK = (1 << SIZE_MANTISSA_BITS) - 1
-SIZE_MANTISSA_MAX = 999
-SIZE_EXPONENT_MAX = 3
-assert SIZE_MANTISSA_MAX <= SIZE_MANTISSA_MASK
-assert SIZE_EXPONENT_MAX < 1 << (SIDE_LENGTH_BITS - SIZE_MANTISSA_BITS)
+SIZE_EXPONENT_MAX = (1 << SIZE_EXPONENT_BITS) - 1
+# the implicit leading bit of a normal (exponent >= 1) size
+SIZE_LEADING_BIT = 1 << SIZE_MANTISSA_BITS
 
 # geometric side length, metres -- the smallest cell whose q/r still cover the whole box
 SIDE_LENGTH_MIN = 3
-SIDE_LENGTH_MAX = SIZE_MANTISSA_MAX * 10**SIZE_EXPONENT_MAX
+SIDE_LENGTH_MAX = (SIZE_LEADING_BIT | SIZE_MANTISSA_MASK) << (SIZE_EXPONENT_MAX - 1)
 
 # the smallest stored size meeting SIDE_LENGTH_MIN, indexed by SizeMeasure: side-to-side is
 # sqrt(3) times the side length
@@ -114,8 +121,8 @@ SIZE_MIN = (SIDE_LENGTH_MIN, math.ceil(SIDE_LENGTH_MIN * SQRT3))
 
 UINT64_MASK = (1 << 64) - 1
 
-# an all-zero size field has mantissa 0, which encode never produces -- so an all-zero id is safe
-# to use as an "invalid" sentinel.
+# an all-zero size field is a size of 0, which encode never produces -- so an all-zero id is safe to
+# use as an "invalid" sentinel.
 INVALID_CELL_ID = 0
 
 
@@ -125,25 +132,26 @@ def pack_size(size: int, measure: SizeMeasure) -> int:
         raise ValueError(
             f"size must be in [{SIZE_MIN[measure]}, {SIDE_LENGTH_MAX}] for {measure.name.lower()}, got {size}"
         )
-    exponent = 0
-    mantissa = size
-    while mantissa > SIZE_MANTISSA_MAX and mantissa % 10 == 0:
-        mantissa //= 10
-        exponent += 1
-    if mantissa > SIZE_MANTISSA_MAX:
+    if size < SIZE_LEADING_BIT:
+        return size
+    shift = size.bit_length() - (SIZE_MANTISSA_BITS + 1)
+    if size & ((1 << shift) - 1):
+        below = size >> shift << shift
         raise ValueError(
-            f"size {size} is not representable: sizes have at most 3 significant digits (e.g. 1230, not 1234)"
+            f"size {size} is not representable: above {2 * SIZE_LEADING_BIT - 1}m a size has 10 significant "
+            f"bits -- the nearest are {below} and {below + (1 << shift)}"
         )
-    return (exponent << SIZE_MANTISSA_BITS) | mantissa
+    return ((shift + 1) << SIZE_MANTISSA_BITS) | (size >> shift) - SIZE_LEADING_BIT
 
 
 def unpack_size(field: int) -> int:
-    """Return the size a 12-bit size field holds, or 0 if `pack_size` could not have produced it."""
+    """Return the size a 12-bit size field holds. Every field is some size; 0 is the only one
+    `pack_size` never produces, and the caller still has to check SIZE_MIN."""
     exponent = field >> SIZE_MANTISSA_BITS
     mantissa = field & SIZE_MANTISSA_MASK
-    if not (1 <= mantissa <= SIZE_MANTISSA_MAX) or (exponent and mantissa < 100):
-        return 0
-    return mantissa * 10**exponent
+    if exponent == 0:
+        return mantissa
+    return (SIZE_LEADING_BIT | mantissa) << (exponent - 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +211,8 @@ def encode(
     """Encode an axial cell at a given size/orientation into a cell id.
 
     Give exactly one of `side_length` (the length of an edge) or `side_to_side` (the distance
-    between two parallel edges), in whole metres with at most 3 significant digits. Accepts numpy
+    between two parallel edges), in whole metres from SIZE_MIN to 65,472 (above 1023, with 10
+    significant bits -- see the module docstring). Accepts numpy
     integers as well as `int` -- see the module docstring.
     """
     size, measure = resolve_size(side_length, side_to_side)
@@ -247,8 +256,8 @@ def validate_cell_id(cell_id: SupportsIndex) -> tuple[int, int]:
 
     q/r fill their fields exactly, so every bit pattern is a valid coordinate and there is nothing
     to check there, and both values of the orientation and measure bits are meaningful. The other
-    two fields are not self-validating: the size field has non-canonical and out-of-range patterns
-    (see `unpack_size` and SIZE_MIN), and the reserved field is only meaningful while it stays zero.
+    two fields are not self-validating: the size field holds sizes below SIZE_MIN (0 among them), and
+    the reserved field is only meaningful while it stays zero.
 
     Shared by `decode` and `morton.decode_morton`, which differ only in how they read q/r.
     `batch.decode_batch` re-implements this vectorised rather than calling it per row.

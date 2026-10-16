@@ -40,9 +40,10 @@ from beahiv import Orientation
      and lists carry no CRS and are read as EPSG:27700 unless you pass `lonlat=True`.
 4. **Size is keyword-only: exactly one of `side_length=` or `side_to_side=`.** `side_length` is
    the length of an edge and `side_to_side` the distance between two parallel edges. Either is a
-   whole number of metres with at most 3 significant digits, from 3 m to 999 km (6 m minimum for
-   `side_to_side`), and must be an `int`, not a float. So 25, 202, 1500 and 14500 work, and 1234
-   raises (use 1230). There is no resolution table: `side_length=200` means 200 m edges. Passing both, neither, or a bare
+   whole number of metres from 3 m to 65,472 m (6 m minimum for `side_to_side`), and must be an
+   `int`, not a float. Every metre up to 1,023 is valid; above that a size needs 10 significant
+   binary digits, so 1000, 1500, 5000 and 10000 work but 1025 and 14500 raise, and the error names
+   the nearest valid sizes (14496, 14512). 2x and 0.5x of a valid size are always valid. There is no resolution table: `side_length=200` means 200 m edges. Passing both, neither, or a bare
    positional number raises `TypeError`. `orientation` (default `Orientation.FLAT`) and
    `predicate` are keyword-only too. The id records which measure was used (`SizeMeasure`), so
    decoded cells keep it. Pick one size, measure and orientation per analysis and pass them
@@ -189,10 +190,10 @@ column can do that.
 - `ValueError: lonlat=... contradicts the declared CRS`: drop the `lonlat` argument and let the
   container's CRS decide.
 - `ValueError` from `decode`: the id is `INVALID_CELL_ID`, a Morton or foreign id, or corrupt.
-- `ValueError: size ... is not representable`: the size has more than 3 significant digits.
-- `ValueError: size must be in [3, 999000]`: the size is below the 3 m minimum (6 m for
-  `side_to_side`) or above 999 km. `get_child`/`get_parent` raise this way too when half or double
-  the size isn't a valid size.
+- `ValueError: size ... is not representable`: above 1,023 m; use one of the two sizes it names.
+- `ValueError: size must be in [3, 65472]`: the size is below the 3 m minimum (6 m for
+  `side_to_side`) or above 65,472 m. `get_child`/`get_parent` raise this way too when half or
+  double the size would be.
 - `ValueError: ... reserved bits set`: usually an id from before the current layout. Regenerate it.
 - `TypeError: a cell size is required`, `... not both`, or `takes N positional arguments`: pass
   exactly one of `side_length=`/`side_to_side=`, by keyword.

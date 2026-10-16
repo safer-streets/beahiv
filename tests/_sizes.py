@@ -1,22 +1,17 @@
 """Representable cell sizes, for tests that draw random ones.
 
-A size has at most 3 significant digits (see the cell_id module docstring), so `randint(1, max)`
-mostly produces sizes `encode` rejects. This enumerates the valid ones directly, from the layout's
-own constants rather than through `pack_size`, so it can check that function rather than echo it.
+Above 1023m a size has 10 significant bits (see the cell_id module docstring), so `randint(1, max)`
+mostly produces sizes `encode` rejects. This enumerates the valid ones directly, as "a 10-bit number
+shifted left by at most 6", rather than through `pack_size`'s exponent/mantissa split -- so it
+checks that function rather than echoing it.
 """
 
 import random
 
 from beahiv import SizeMeasure
-from beahiv.cell_id import SIZE_EXPONENT_MAX, SIZE_MANTISSA_MAX, SIZE_MIN
+from beahiv.cell_id import SIZE_MIN
 
-REPRESENTABLE_SIZES = sorted(
-    {
-        mantissa * 10**exponent
-        for exponent in range(SIZE_EXPONENT_MAX + 1)
-        for mantissa in range(1, SIZE_MANTISSA_MAX + 1)
-    }
-)
+REPRESENTABLE_SIZES = sorted({significand << shift for significand in range(1, 1024) for shift in range(7)})
 
 
 def sizes(measure: SizeMeasure = SizeMeasure.SIDE_LENGTH, upto: int | None = None) -> list[int]:

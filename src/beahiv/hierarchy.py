@@ -27,8 +27,9 @@ integer ratios; for a covering at an arbitrary new side_length, see `polyfill.re
 An odd side_length raises rather than returning nothing, unlike odd q/r: side lengths are integer
 metres, so an odd one means the 0.5x grid doesn't exist at all and there is nothing to be inside --
 a different failure from a cell that merely doesn't line up with a grid that does exist. Doubling
-past `SIDE_LENGTH_MAX` likewise raises, from `encode`, as does a 2x or 0.5x size that needs more
-than 3 significant digits (501 -> 1002, 2010 -> 1005): there is no such grid to look in either.
+past `SIDE_LENGTH_MAX` likewise raises, from `encode`, as does halving below the minimum size. Those
+are the only cases: sizes are binary floats (see `cell_id`), so 2x and 0.5x of a size are always
+sizes too.
 
 "side_length" throughout means the cell's stored size, whichever measure it is in: a SIDE_TO_SIDE
 cell's relatives are SIDE_TO_SIDE cells at 2x/0.5x its side-to-side distance, which is the same
@@ -117,8 +118,7 @@ def get_parent(cell_id: SupportsIndex) -> int | None:
 
     Scalar only: most cells have no same-centroid parent, so an array form would be mostly None.
 
-    Raises ValueError if doubling side_length would exceed SIDE_LENGTH_MAX, or need more than 3
-    significant digits.
+    Raises ValueError if doubling side_length would exceed SIDE_LENGTH_MAX.
     """
     idx = decode(cell_id)
     if idx.q % 2 != 0 or idx.r % 2 != 0:
@@ -140,8 +140,7 @@ def get_parents(cell_id: SupportsIndex | CellIdsLike) -> tuple[int, ...] | np.nd
     int64 array of every cell overlapping any of them, with duplicates dropped, and missing or
     invalid ids skipped.
 
-    Raises ValueError if doubling side_length would exceed SIDE_LENGTH_MAX, or need more than 3
-    significant digits.
+    Raises ValueError if doubling side_length would exceed SIDE_LENGTH_MAX.
     """
     if _is_scalar_id(cell_id):
         return _get_parents_scalar(cell_id)
@@ -156,7 +155,7 @@ def get_child(cell_id: SupportsIndex) -> int:
     Scalar only, like `get_parent`: the same-centroid lookups answer a question about one cell.
 
     Raises ValueError if side_length is odd -- there is no 0.5x grid at all -- or if half of it
-    needs more than 3 significant digits, or is below the minimum size.
+    is below the minimum size.
     """
     idx = decode(cell_id)
     if idx.size % 2 != 0:
@@ -179,7 +178,7 @@ def get_children(cell_id: SupportsIndex | CellIdsLike) -> tuple[int, ...] | np.n
     invalid ids skipped.
 
     Raises ValueError if side_length is odd -- there is no 0.5x grid at all -- or if half of it
-    needs more than 3 significant digits, or is below the minimum size.
+    is below the minimum size.
     """
     if _is_scalar_id(cell_id):
         return _get_children_scalar(cell_id)

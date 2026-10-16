@@ -219,8 +219,11 @@ When reviewing a PR or diff, check:
    (`FLOAT_EXACT_BITS`, asserted, and `test_every_id_is_exact_as_a_float64`). This is what stops
    an id that goes through pandas or JSON from coming back as a different, valid cell. Never
    spend a reserved bit above bit 52 to make room for a feature: shrink q/r (raising
-   `SIDE_LENGTH_MIN`) instead. The size field is the one whose bit patterns aren't all valid
-   values (non-canonical encodings, mantissa above 999, below `SIZE_MIN`), so every encode path
+   `SIDE_LENGTH_MIN`) instead. The size field is a binary float (3-bit exponent, 9-bit mantissa) chosen
+   so that 2x/0.5x of a size is always a size, which the hierarchy relies on. Don't swap it for a
+   decimal format: that was tried and broke the hierarchy for 1,200 sizes
+   (`test_doubling_and_halving_stay_representable`). Every field value is a size, but sizes below
+   `SIZE_MIN` aren't allowed, so every encode path
    must go through `cell_id.pack_size`, `encode_batch` included, and every decode path
    must refuse to read an invalid one — `cell_id.validate_cell_id` is the shared scalar check
    (`decode`, `decode_morton`), which raises, and `decode_batch` mirrors it vectorised, zeroing

@@ -241,12 +241,21 @@ def test_overlapping_lookups_on_arrays_skip_invalid_ids(lookup):
         lookup(INVALID_CELL_ID)
 
 
+@pytest.mark.parametrize("size", [350, 511, 512, 1_000, 1_023, 1_500, 10_000, 22_400])
+def test_lookups_work_across_the_whole_size_range(size):
+    """Sizes are binary floats, so 2x and 0.5x of a size are sizes too -- including either side of
+    the 1023m boundary where they stop being every whole metre."""
+    cell_id = encode(4, -6, side_length=size)
+    assert decode(get_parents(cell_id)[0]).size == 2 * size
+    if size % 2 == 0:  # an odd size has no 0.5x grid, binary or not
+        assert decode(get_children(cell_id)[0]).size == size // 2
+
+
 @pytest.mark.parametrize(
     ("lookup", "size"),
-    [(get_parent, 502), (get_parents, 501), (get_child, 2010), (get_children, 2030), (get_child, 4)],
+    [(get_parent, 2**15), (get_parents, 40_000), (get_child, 4), (get_children, 5)],
 )
-def test_lookups_raise_when_the_other_grid_size_is_not_representable(lookup, size):
-    """Sizes have 3 significant digits, so 2x or 0.5x of one need not be a size at all (1004, 1002,
-    1005, 1015), and half the smallest is below the minimum -- there is no grid to look in."""
+def test_lookups_raise_when_the_other_grid_is_out_of_range(lookup, size):
+    """Past SIDE_LENGTH_MAX, below the minimum, or (as ever) an odd size: no grid to look in."""
     with pytest.raises(ValueError):
         lookup(encode(0, 0, side_length=size))

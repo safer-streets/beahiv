@@ -17,19 +17,19 @@ Write the entry as part of the change, not after the fact.
 - **What**
   - [cell_id.py](src/beahiv/cell_id.py): new layout, every id < 2**52 — reserved 12 (bits 52–63),
     measure 1, orientation 1, size 12, q 19, r 19. `FLOAT_EXACT_BITS = 53` is asserted against.
-    The size is decimal, mantissa 1..999 × 10^exponent 0..3, so 3 m–999 km in 12 bits
-    (`pack_size`/`unpack_size`, canonical smallest exponent). `SIDE_LENGTH_MIN = 3` is a
-    geometric side, so `SIZE_MIN = (3, 6)` per measure. `SIDE_LENGTH_MAX = 999_000`.
+    The size is a binary float in 12 bits: a 3-bit exponent and a 9-bit mantissa, with
+    subnormals, so every metre up to 1,023 is exact, with 10 significant bits above that, up to
+    65,472 m (`pack_size`/`unpack_size`). `SIDE_LENGTH_MIN = 3` is a geometric side, so
+    `SIZE_MIN = (3, 6)` per measure.
     `Q_OFFSET`/`R_OFFSET` are 260,000/160,000, not centred on zero.
   - [morton.py](src/beahiv/morton.py): uses `pack_size`; interleaves 19/19 bits.
   - [batch.py](src/beahiv/batch.py): `encode_batch` packs the size once. `decode_batch` mirrors
     `unpack_size`/`SIZE_MIN` vectorised. Float id input is now *accepted*: integral floats below
     2**53 are exact ids, NaN is missing, and any other float is an invalid row. This replaces #15's
     `TypeError`.
-  - [hierarchy.py](src/beahiv/hierarchy.py): docs. 2x/0.5x sizes needing a 4th significant digit
-    raise, from `encode`.
-  - Tests: `test_cell_id.py` rewritten for the layout (exhaustive size packing, non-canonical and
-    out-of-range size fields, float exactness, old-layout ids rejected, the National Grid box at
+  - [hierarchy.py](src/beahiv/hierarchy.py): docs only. 2x/0.5x of a size is always a size.
+  - Tests: `test_cell_id.py` rewritten for the layout (exhaustive size packing, 2x/0.5x closure,
+    nearest-size error, size fields below the minimum, float exactness, old-layout ids rejected, the National Grid box at
     the minimum size). New `tests/_sizes.py` draws representable sizes for the random-cell tests.
     Hierarchy fixtures moved from `[2, 4, ...]` to `[12, 24, ...]`.
   - README "Side length" and "Cell identifiers" rewritten, batch float paragraph; SKILL size rule,
@@ -43,10 +43,16 @@ Write the entry as part of the change, not after the fact.
   - **52 bits, not 53**, keeping bit 52 spare. With every bit below 2**53 spent, the next flag
     (and #10 just needed one) would have to cost float safety or q/r bits. The cost is a 3 m
     minimum instead of 2 m.
-  - **Decimal 3-significant-digit size** (user's idea) over a smaller cap or a resolution table:
-    it saves 5 bits over the 17-bit metre field and widens the range to 999 km.
-    3,699 sizes. The cost: 1,200 sizes have an unrepresentable double, and 1,200 an
-    unrepresentable half. None of the commonly used sizes are affected.
+  - **Binary-float size (3/9), after a decimal one.** The user first proposed 3 significant
+    *decimal* digits × 10^0..3 (3 m–999 km in 12 bits), and that was built first. It broke
+    `get_parents`/`get_children` for 1,200 sizes, because doubling 501 gives 1,002. The user
+    ruled that parents/children must work, so the exponent is binary: doubling only increments it.
+    Among the 12-bit splits, 3/9 keeps every metre to 1,023 exact. 4/8 and 5/7 waste range on
+    sizes thousands of km wide and lose exactness above 511 m and 255 m. The costs: a 65,472 m
+    maximum (500 km is gone), and round decimal sizes above about 10 km, such as 14.5 km and
+    25 km, aren't exact. Their nearest valid sizes are within 0.2%, and `pack_size`'s error names
+    them rather than rounding silently. 13 bits (3/10, 4 m minimum) and 14 bits (3/11, 5 m minimum)
+    were also offered.
   - **Sizes below the minimum are rejected outright**, not left to fail q/r's range check only
     away from the origin.
   - **No margin around the National Grid box.** I first fitted the offsets to the box plus 50 km,

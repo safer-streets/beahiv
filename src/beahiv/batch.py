@@ -29,10 +29,9 @@ from .cell_id import (
     RESERVED_SHIFT,
     SIDE_LENGTH_MASK,
     SIDE_LENGTH_SHIFT,
-    SIZE_EXPONENT_MAX,
+    SIZE_LEADING_BIT,
     SIZE_MANTISSA_BITS,
     SIZE_MANTISSA_MASK,
-    SIZE_MANTISSA_MAX,
     SIZE_MIN,
     pack_size,
     resolve_size,
@@ -160,7 +159,6 @@ def encode_batch(
     )
 
 
-_POW10 = np.array([10**e for e in range(SIZE_EXPONENT_MAX + 1)], dtype=np.int64)
 _SIZE_MIN = np.array(SIZE_MIN, dtype=np.int64)
 # a float id is exact below 2**53 (every valid one is); anything at or above can't be one anyway
 _FLOAT_ID_LIMIT = 2.0**53
@@ -236,19 +234,13 @@ def decode_batch(
     size_field = (cell_ids >> SIDE_LENGTH_SHIFT) & SIDE_LENGTH_MASK
     exponent = size_field >> SIZE_MANTISSA_BITS
     mantissa = size_field & SIZE_MANTISSA_MASK
-    size = mantissa * _POW10[exponent]
+    size = np.where(exponent == 0, mantissa, (SIZE_LEADING_BIT | mantissa) << np.maximum(exponent - 1, 0))
     q = ((cell_ids >> Q_SHIFT) & Q_MASK) - Q_OFFSET
     r = (cell_ids & R_MASK) - R_OFFSET
 
     # mirrors cell_id.unpack_size and validate_cell_id. A negative id has bit 63 set, which the
     # arithmetic shift keeps, so `>> RESERVED_SHIFT` is non-zero for it without a sign check
-    invalid = (
-        ((cell_ids >> RESERVED_SHIFT) != 0)
-        | (mantissa < 1)
-        | (mantissa > SIZE_MANTISSA_MAX)
-        | ((exponent > 0) & (mantissa < 100))
-        | (size < _SIZE_MIN[measure])
-    )
+    invalid = ((cell_ids >> RESERVED_SHIFT) != 0) | (size < _SIZE_MIN[measure])
     if np.any(invalid):
         for field in (q, r, size, measure, orientation):
             field[invalid] = 0

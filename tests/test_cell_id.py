@@ -20,7 +20,6 @@ from beahiv.cell_id import (
     SIDE_LENGTH_MAX,
     SIDE_LENGTH_MIN,
     SIDE_LENGTH_SHIFT,
-    SIZE_MANTISSA_BITS,
     SIZE_MIN,
     pack_size,
     unpack_size,
@@ -109,22 +108,43 @@ def test_float_ids_decode_exactly_in_a_batch():
 
 
 def test_size_packing_round_trips_every_representable_size():
-    """Exhaustive: 3,699 sizes. Each packs to its own field (no two encodings of one size, which would
-    give one cell two ids), and unpacks to itself."""
-    fields = {pack_size(size, SizeMeasure.SIDE_TO_SIDE): size for size in sizes(SizeMeasure.SIDE_TO_SIDE)}
-    assert len(fields) == len(sizes(SizeMeasure.SIDE_TO_SIDE))
+    """Exhaustive: every size packs to its own field (no two encodings of one size, which would give
+    one cell two ids) and unpacks to itself -- and every field above the minimum is one of them."""
+    fields = {pack_size(size, SizeMeasure.SIDE_LENGTH): size for size in sizes()}
+    assert len(fields) == len(sizes())
     assert all(unpack_size(field) == size for field, size in fields.items())
+    assert {unpack_size(field) for field in range(SIDE_LENGTH_MASK + 1)} - {0, 1, 2} == set(sizes())
 
 
-@pytest.mark.parametrize("size", [3, 999, 1_000, 1_500, 14_500, 200_000, 500_000, SIDE_LENGTH_MAX])
-def test_sizes_with_three_significant_digits_encode(size):
+@pytest.mark.parametrize("size", [3, 202, 350, 511, 512, 1_000, 1_023, 1_024, 1_500, 5_000, 10_000, SIDE_LENGTH_MAX])
+def test_every_metre_to_1023_and_round_sizes_to_10km_encode(size):
     assert decode(encode(0, 0, side_length=size)).size == size
 
 
-@pytest.mark.parametrize("size", [1_001, 1_234, 14_550, SIDE_LENGTH_MAX + 1, 1_000_000])
-def test_sizes_needing_more_than_three_significant_digits_raise(size):
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize(
+    ("size", "nearest"),
+    [(1_025, "1024 and 1026"), (14_500, "14496 and 14512"), (25_000, "24992 and 25024")],
+)
+def test_sizes_needing_more_than_10_significant_bits_raise_naming_the_nearest(size, nearest):
+    with pytest.raises(ValueError, match=nearest):
         encode(0, 0, side_length=size)
+
+
+@pytest.mark.parametrize("size", [SIDE_LENGTH_MAX + 1, 2**16, 100_000])
+def test_sizes_above_the_maximum_raise(size):
+    with pytest.raises(ValueError, match="must be in"):
+        encode(0, 0, side_length=size)
+
+
+def test_doubling_and_halving_stay_representable():
+    """Why the exponent is binary: the factor-of-two hierarchy always has a grid to go to while it is
+    in range -- the property the decimal field this replaced lacked for 1,200 sizes."""
+    representable = set(sizes())
+    for size in representable:
+        if 2 * size <= SIDE_LENGTH_MAX:
+            assert 2 * size in representable
+        if size % 2 == 0 and size // 2 >= SIDE_LENGTH_MIN:
+            assert size // 2 in representable
 
 
 @pytest.mark.parametrize("measure", list(SizeMeasure))
@@ -146,20 +166,10 @@ def _with_size_field(cell_id, field):
     return cell_id & ~(SIDE_LENGTH_MASK << SIDE_LENGTH_SHIFT) | (field << SIDE_LENGTH_SHIFT)
 
 
-@pytest.mark.parametrize(
-    ("exponent", "mantissa"),
-    [
-        (0, 0),  # size 0
-        (1, 50),  # 500m written as 50e1: non-canonical, 500e0 is the encoding
-        (3, 99),
-        (0, 1000),  # mantissa past 999, inside its 10-bit field
-        (2, 1023),
-        (0, 1),  # a real size, but below SIDE_LENGTH_MIN
-    ],
-)
-def test_decode_rejects_size_fields_encode_would_not_produce(exponent, mantissa):
-    """The size field is the one with bit patterns that aren't valid values, so decode has to look."""
-    cell_id = _with_size_field(encode(4, -6, side_length=100), (exponent << SIZE_MANTISSA_BITS) | mantissa)
+@pytest.mark.parametrize("field", [0, 1, 2])
+def test_decode_rejects_size_fields_below_the_minimum(field):
+    """Every size field value is a size, but 0-2m aren't allowed ones, so decode still has to look."""
+    cell_id = _with_size_field(encode(4, -6, side_length=100), field)
     with pytest.raises(ValueError, match="size"):
         decode(cell_id)
     assert decode_batch([cell_id])[2].tolist() == [0]
@@ -279,5 +289,5 @@ def test_encode_size_cannot_be_passed_positionally():
 
 def test_representable_sizes_helper_matches_the_layout():
     """`tests/_sizes.py` enumerates sizes independently of pack_size; check it agrees."""
-    assert len(REPRESENTABLE_SIZES) == 999 + 3 * 900
-    assert REPRESENTABLE_SIZES[-1] == SIDE_LENGTH_MAX
+    assert len(REPRESENTABLE_SIZES) == SIDE_LENGTH_MASK  # one per non-zero field value
+    assert REPRESENTABLE_SIZES[-1] == SIDE_LENGTH_MAX == 65_472
