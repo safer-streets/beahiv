@@ -50,9 +50,13 @@ from beahiv import Orientation
    and `get_parent`/`get_child` (same-centroid cell at 2x/0.5x, often `None`) are factor-of-two
    only.
 7. **Missing input becomes `INVALID_CELL_ID` (0).** NaN coordinates and `None` or empty points
-   encode to it rather than raising. `decode` and anything that decodes (`centroids`,
-   `cell_polygons`, `get_neighbours`, ...) **rejects** it, so filter it out first:
-   `ids[ids != beahiv.INVALID_CELL_ID]`.
+   encode to it rather than raising. Going the other way, the *batch* functions tolerate a
+   null or invalid id (`INVALID_CELL_ID`, `None`, `NaN`, pandas `<NA>`, Arrow null):
+   `cell_polygons`/`centroids` give `None` for that row, `batch.cell_centre_batch` gives NaN,
+   `batch.decode_batch` gives zeros (`side_length == 0`), and array `get_parents`/`get_children`
+   skip it. The *scalar* functions (`decode`, `cell_polygon`, `centroid`, `get_neighbours`, ...)
+   still **raise** for one. Keep id columns integer: pandas `Int64` or Arrow `int64` for nullable
+   ids, never float64, which has already corrupted any id it holds and raises `TypeError`.
 8. **Scalar or array dispatch is automatic** for `lonlat_to_cell`, `bng_to_cell`, `point_to_cell`,
    `get_parents` and `get_children`. A Python `float`/`int` (or a single `Point`) gives a Python
    `int`. A list, ndarray, Series or pyarrow array gives an `int64` ndarray, or a pyarrow array
@@ -123,7 +127,7 @@ Centres and decoding:
 ```python
 beahiv.centroid(cell_id)  # Point in EPSG:27700
 beahiv.centroid(cell_id, lonlat=True)  # Point(lon, lat)
-beahiv.centroids(cell_ids, lonlat=True)  # list[Point]
+beahiv.centroids(cell_ids, lonlat=True)  # list[Point | None], None for a missing/invalid id
 beahiv.decode(cell_id)  # CellIndex(q, r, side_length, orientation)
 beahiv.encode(q, r, side_length, Orientation.FLAT)
 ```
@@ -167,6 +171,8 @@ column can do that.
 - `ValueError: lonlat=... contradicts the declared CRS`: drop the `lonlat` argument and let the
   container's CRS decide.
 - `ValueError` from `decode`: the id is `INVALID_CELL_ID`, a Morton or foreign id, or corrupt.
+- `TypeError: cell ids must be integers, not floats`: the id column went through float64,
+  usually an int64 column that gained a `NaN`. Keep it `Int64`/Arrow `int64`.
 - `ValueError: ... requires a single side_length/orientation per call` or `distance requires both
   cells to share ...`: ids from different grids were mixed.
 - `TypeError` mentioning `centroids`/`centroid for one`: you used the singular form with an array, or the reverse.

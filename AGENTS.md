@@ -137,6 +137,18 @@ field) should get a directly corresponding test rather than being covered incide
   sync. (This is exactly how `cartesian_to_axial_batch`'s POINTY branch once drifted from the
   scalar version — a "simplification" that swapped `qf`/`rf` instead of recomputing them looked
   equivalent but wasn't; `ty` doesn't catch it, only a same-orientation batch-vs-scalar test does.)
+- **Batch functions tolerate missing and invalid cell ids; scalar ones raise.** Every batch
+  function taking cell ids goes through `batch._as_cell_id_array` then `decode_batch`, which
+  zeroes any row scalar `decode` would reject (null, `INVALID_CELL_ID`, reserved bits,
+  side_length out of range); `side_length == 0` is the validity mask downstream. The output
+  carries the gap through rather than raising: NaN centres, `None` geometries, nothing added to
+  a `get_parents`/`get_children` union. One bad row shouldn't cost a whole column, and the
+  `*_to_cell` functions already turn missing input into `INVALID_CELL_ID` going the other way.
+  Errors in the *call* still raise — mixed grids, float ids. Never `np.asarray` an id column
+  directly: a pandas `Int64` Series or nullable Arrow array holding a null becomes float64,
+  which rounds every FLAT id (all >= 2**60). `_as_cell_id_array` fills nulls via
+  `fillna`/`fill_null` first, and rejects floats rather than decode a rounded id to the wrong
+  cell.
 - **`lonlat_to_cell` and `bng_to_cell` dispatch transparently on scalar vs array-like input.** A plain `int`/`float` takes the pure-Python path (no numpy import); anything else
   (`list`, `np.ndarray`, pandas `Series`, ...) dispatches to the `beahiv.batch` equivalent. This is
   implemented with `@overload` + `numpy.typing.ArrayLike`, not a `float | np.ndarray` union — a
@@ -193,10 +205,11 @@ When reviewing a PR or diff, check:
    `SIDE_LENGTH_MASK` — side_length is the one field whose limit is a range check rather than
    its bit width, so an oversized value overflows into the orientation bit instead of being
    masked off. Every encode path must check it, `encode_batch` included, and every decode path
-   must reject an id carrying one — `cell_id.validate_cell_id` is the shared scalar check
-   (`decode`, `decode_morton`), and `decode_batch` mirrors it vectorised. The same applies to a
-   non-zero reserved field: `decode` refusing it is what keeps those bits free to mean something
-   later, so don't relax it to "ignore unknown bits".
+   must refuse to read an id carrying one — `cell_id.validate_cell_id` is the shared scalar check
+   (`decode`, `decode_morton`), which raises, and `decode_batch` mirrors it vectorised, zeroing
+   the row instead (see the batch-tolerance rule). The same applies to a non-zero reserved field:
+   refusing it is what keeps those bits free to mean something later, so don't relax either path
+   to "ignore unknown bits" and decode the rest.
 5. **Dispatch typing** — a new scalar/array dual-mode function uses `@overload` +
    `numpy.typing.ArrayLike`, matching `lonlat_to_cell`/`bng_to_cell`, not a bare
    `X | np.ndarray` union return type. A function returning *Shapely* takes the other route:

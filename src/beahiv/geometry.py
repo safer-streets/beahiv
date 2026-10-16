@@ -5,10 +5,10 @@ import math
 from typing import SupportsIndex
 
 import numpy as np
-from numpy.typing import ArrayLike
+import shapely
 from shapely import Point, Polygon
 
-from .batch import cell_centre_batch, cell_to_lonlat_batch
+from .batch import CellIdsLike, _cell_centres, cell_centre_batch, cell_to_lonlat_batch
 from .cell_id import decode
 from .coords import axial_to_cartesian
 from .geo import _cell_centre
@@ -33,25 +33,30 @@ def cell_polygon(cell_id: SupportsIndex) -> Polygon:
     )
 
 
-def cell_polygons(cell_ids: ArrayLike) -> list[Polygon]:
+def cell_polygons(cell_ids: CellIdsLike) -> list[Polygon | None]:
     """Vectorised version of the above: one `Polygon` for every cell in `cell_ids`.
 
-    Takes anything `batch.cell_centre_batch` does -- a list, a numpy array, a pandas Series --
-    since that's what the centre lookup here forwards to.
+    Takes anything `batch.cell_centre_batch` does -- a list, a numpy array, a pandas Series, a
+    pyarrow array -- since that's what the centre lookup here forwards to.
 
-    Every cell must share the same side_length and orientation -- the same restriction
+    A missing or invalid id (null, INVALID_CELL_ID, or anything else scalar `decode` rejects) gives
+    `None` in its place rather than raising, so the result still lines up row for row with the
+    input. `None` rather than an empty `Polygon`: it is what geopandas reads as a missing geometry
+    (`isna()`), and what `shapely.to_wkb` turns back into a null.
+
+    Every valid cell must share the same side_length and orientation -- the same restriction
     `batch.cell_centre_batch` already applies to the vectorised centre lookup this reuses,
     since a single angle set / radius only applies to one orientation and side_length at a time.
     """
-    ids = np.asarray(cell_ids)
-    if ids.size == 0:
-        return []
-    xc, yc = cell_centre_batch(ids)
-    idx = decode(ids[0])
-    theta = np.radians(_VERTEX_ANGLES_DEG[idx.orientation])
-    vx = xc[:, None] + idx.side_length * np.cos(theta)
-    vy = yc[:, None] + idx.side_length * np.sin(theta)
-    return [Polygon(zip(row_x, row_y, strict=True)) for row_x, row_y in zip(vx.tolist(), vy.tolist(), strict=True)]
+    xc, yc, side_length, orientation = _cell_centres(cell_ids)
+    valid = ~np.isnan(xc)
+    polygons = np.full(xc.shape, None, dtype=object)
+    if np.any(valid):
+        theta = np.radians(_VERTEX_ANGLES_DEG[orientation])
+        vx = xc[valid, None] + side_length * np.cos(theta)
+        vy = yc[valid, None] + side_length * np.sin(theta)
+        polygons[valid] = shapely.polygons(np.stack([vx, vy], axis=-1))
+    return polygons.tolist()
 
 
 def centroid(cell_id: SupportsIndex, *, lonlat: bool = False) -> Point:
@@ -72,11 +77,12 @@ def centroid(cell_id: SupportsIndex, *, lonlat: bool = False) -> Point:
     return Point(*_cell_centre(cell_id, lonlat))
 
 
-def centroids(cell_ids: ArrayLike, *, lonlat: bool = False) -> list[Point]:
+def centroids(cell_ids: CellIdsLike, *, lonlat: bool = False) -> list[Point | None]:
     """Vectorised version of the above: one `Point` for every cell in `cell_ids`.
 
-    Takes anything `batch.cell_centre_batch` does, and applies the same restriction -- every cell
-    must share one side_length and orientation. Returns `Point`s for symmetry with `cell_polygons`;
+    Takes anything `batch.cell_centre_batch` does, and applies the same restriction -- every valid
+    cell must share one side_length and orientation. A missing or invalid id gives `None`, as in
+    `cell_polygons`. Returns `Point`s for symmetry with `cell_polygons`;
     callers wanting plain coordinate columns (`gdf["x"], gdf["y"] = ...`) should use
     `batch.cell_centre_batch` / `batch.cell_to_lonlat_batch` directly, which is what this wraps.
     """
@@ -88,7 +94,8 @@ def centroids(cell_ids: ArrayLike, *, lonlat: bool = False) -> list[Point]:
         raise TypeError(
             f"centroids takes many cell ids, not a single {type(cell_ids).__name__} -- use centroid for one"
         )
-    if ids.size == 0:
-        return []
-    xs, ys = cell_to_lonlat_batch(ids) if lonlat else cell_centre_batch(ids)
-    return [Point(x, y) for x, y in zip(xs.tolist(), ys.tolist(), strict=True)]
+    xs, ys = cell_to_lonlat_batch(cell_ids) if lonlat else cell_centre_batch(cell_ids)
+    valid = ~np.isnan(xs)
+    points = np.full(xs.shape, None, dtype=object)
+    points[valid] = shapely.points(xs[valid], ys[valid])
+    return points.tolist()

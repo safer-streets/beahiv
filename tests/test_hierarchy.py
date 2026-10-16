@@ -5,7 +5,7 @@ import pytest
 from shapely.ops import unary_union
 
 from beahiv import Orientation, cell_polygon, decode, encode, get_child, get_children, get_parent, get_parents
-from beahiv.cell_id import SIDE_LENGTH_MAX
+from beahiv.cell_id import INVALID_CELL_ID, SIDE_LENGTH_MAX
 from beahiv.coords import axial_to_cartesian
 
 # Two cells sharing an edge produce a sliver intersection of ~1e-29 of a cell's area out of
@@ -208,3 +208,14 @@ def test_overlapping_lookups_on_arrays_return_the_deduplicated_union(lookup):
     assert lookup(cell_ids.reshape(3, 1)).tolist() == expected
     assert lookup(np.concatenate([cell_ids, cell_ids])).tolist() == expected
     assert lookup([]).tolist() == []
+
+
+@pytest.mark.parametrize("lookup", [get_parents, get_children])
+def test_overlapping_lookups_on_arrays_skip_invalid_ids(lookup):
+    """An array's bad ids add nothing to the union; a scalar bad id still raises, from decode."""
+    cell_id = encode(4, -6, 100)
+
+    assert lookup([None, cell_id, INVALID_CELL_ID]).tolist() == sorted(lookup(cell_id))
+    assert lookup([None, INVALID_CELL_ID]).tolist() == []
+    with pytest.raises(ValueError):
+        lookup(INVALID_CELL_ID)

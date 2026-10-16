@@ -333,7 +333,8 @@ demand from the cell centre, at 30/90/150/210/270/330° (POINTY) or
 
 `cell_polygons` is the vectorised sibling for many cells at once, built on
 `batch.cell_centre_batch` for the centre lookup, and taking the same
-array-like input it does — a list, a numpy array, a pandas Series:
+array-like input it does — a list, a numpy array, a pandas Series, a pyarrow
+array:
 
 ```python
 beahiv.cell_polygons(cell_ids)  # one Polygon per cell id, same order
@@ -341,7 +342,11 @@ beahiv.cell_polygons(cell_ids)  # one Polygon per cell id, same order
 
 Every cell passed in must share the same `side_length` and `orientation` —
 same restriction as `cell_centre_batch`, since a single angle set and radius
-only apply to one grid at a time. An empty input returns `[]`.
+only apply to one grid at a time. An empty input returns `[]`. A missing
+(null) or invalid id, `INVALID_CELL_ID` included, gives `None` in its place
+rather than raising, so the result still lines up row for row: geopandas
+reads `None` as a missing geometry, and `shapely.to_wkb` turns it back into
+a null.
 
 `centroid`/`centroids` mirror that pair for cell centres, returning Shapely
 `Point`s rather than coordinate tuples:
@@ -380,13 +385,29 @@ cell_ids = lonlat_to_cell_batch(lons, lats, side_length=500)
 
 A missing coordinate (`NaN`) is an absent point rather than an error: it
 encodes to `INVALID_CELL_ID` (`0`), which no valid `encode` can produce.
-Decoding is the strict direction, though — `decode`/`decode_batch` reject
-the sentinel rather than returning coordinates for it, so filter it out
-before decoding a batch built from data with gaps:
 
-```python
-centres = beahiv.centroids(cell_ids[cell_ids != beahiv.INVALID_CELL_ID])
-```
+The batch functions that take cell ids tolerate gaps the same way. A null
+(`None`, `NaN`, pandas `<NA>`, an Arrow null), `INVALID_CELL_ID`, or any
+other id scalar `decode` would reject becomes a missing value in the output
+rather than an error:
+
+| Function | Missing/invalid row gives |
+| --- | --- |
+| `batch.decode_batch` | all-zero `(q, r, side_length, orientation)` — `side_length == 0` is the mask |
+| `batch.cell_centre_batch`, `batch.cell_to_lonlat_batch` | `NaN` |
+| `cell_polygons`, `centroids` | `None` |
+| `get_parents`, `get_children` (array input) | nothing — the id adds no cells to the union |
+
+Only the scalar functions (`decode`, `cell_polygon`, `centroid`, ...) still
+raise for a bad id. Mixing grids still raises in the batch functions too:
+that is a mistake in the call, not a gap in the data.
+
+Ids must stay integers. A float64 array holds only 53 bits exactly, and a FLAT
+id is above 2**60, so an id that has been through a float is already the wrong
+cell — the batch functions raise `TypeError` for float input rather than
+decode it. The usual way to get one is an int64 column gaining a `NaN`; keep
+nullable ids as pandas `Int64` or Arrow `int64` instead, which are read
+without going through float.
 
 The scalar functions take numpy integers as well as `int`, so a single id
 picked out of a batch result (or read from a pandas column, or a DuckDB
@@ -608,7 +629,8 @@ polyfill, and the reason to spend the `type="arrow"` declaration. It
 inherits `cell_polygons`' restriction that every id in a call shares one
 `side_length` and `orientation`, which holds for the output of a single
 `polyfill` but would raise on a column mixing grids; use the per-row
-`cell_polygon` if a query can do that.
+`cell_polygon` if a query can do that. A `NULL` (or `0`) id gives a `NULL`
+geometry.
 
 `bh_polyfill` stays per-row: it consumes one boundary polygon per call and
 returns a list, so there is nothing to vectorise. `bh_point_to_cell` binds
@@ -671,22 +693,22 @@ Property tests cover:
 | --- | --- |
 | `encode(q, r, side_length, orientation)` | Build a cell id |
 | `decode(cell_id)` | Recover `CellIndex(q, r, side_length, orientation)`; raises for any id `encode` couldn't have produced |
-| `INVALID_CELL_ID` | The all-zero sentinel emitted for missing input — filter it out before decoding |
+| `INVALID_CELL_ID` | The all-zero sentinel emitted for missing input — scalar `decode` raises for it; the batch functions give a missing value |
 | `lonlat_to_cell(lon, lat, side_length, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow). Raises outside EPSG:27700's area of use (lon −9.01–2.01, lat 49.75–61.01) |
 | `latlon_to_cell(lat, lon, side_length, orientation)` | Deprecated lat-first spelling of `lonlat_to_cell` |
 | `bng_to_cell(x, y, side_length, orientation)` | EPSG:27700 → cell id, no WGS84 round trip (scalar, array-like, or pyarrow). No bounds check: any (x, y) within the bit budget encodes |
 | `point_to_cell(points, side_length, orientation, *, lonlat=None)` | Shapely point(s) — a `Point`, or a geopandas `GeoDataFrame`/`GeoSeries` — → cell id(s). EPSG:27700, or WGS84 `Point(lon, lat)` via a declared EPSG:4326 or `lonlat=True` |
 | `centroid(cell_id, *, lonlat=False)` | Cell centre as a Shapely `Point` — EPSG:27700 (default), or WGS84 as `Point(lon, lat)` (`lonlat=True`) |
-| `centroids(cell_ids, *, lonlat=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out |
+| `centroids(cell_ids, *, lonlat=False)` | Vectorised `centroid` — one same-grid cell id list in, one `Point` per cell out (`None` for a missing/invalid id) |
 | `cell_polygon(cell_id)` | Cell outline as a Shapely `Polygon`, in EPSG:27700 |
-| `cell_polygons(cell_ids)` | Vectorised `cell_polygon` — one same-grid cell id list in, one `Polygon` per cell out |
+| `cell_polygons(cell_ids)` | Vectorised `cell_polygon` — one same-grid cell id list in, one `Polygon` per cell out (`None` for a missing/invalid id) |
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |
 | `distance(cell_a, cell_b)` | Hex grid distance |
 | `k_ring(cell_id, k)` | All cells within `k` hops |
 | `get_parent(cell_id)` | Cell at 2x `side_length` sharing this cell's exact centroid, or `None` if `q`/`r` aren't both even; single id only |
 | `get_child(cell_id)` | Cell at `side_length / 2` sharing this cell's exact centroid — always `(2q, 2r)`; single id only |
-| `get_parents(cell_id)` | Every cell at 2x `side_length` overlapping this one — 1 if it nests exactly, else the 2 it straddles; array input gives the deduplicated union |
-| `get_children(cell_id)` | Every cell at `side_length / 2` overlapping this one — always 7, covering it with 75% overspill; array input gives the deduplicated union |
+| `get_parents(cell_id)` | Every cell at 2x `side_length` overlapping this one — 1 if it nests exactly, else the 2 it straddles; array input gives the deduplicated union, skipping missing/invalid ids |
+| `get_children(cell_id)` | Every cell at `side_length / 2` overlapping this one — always 7, covering it with 75% overspill; array input gives the deduplicated union, skipping missing/invalid ids |
 | `encode_morton` / `decode_morton` | Z-order variant of `encode`/`decode` |
 | `polyfill(polygon, side_length, orientation, predicate)` | Every cell id covering a Shapely polygon |
 | `bbox_fill(minx, miny, maxx, maxy, side_length, orientation, predicate)` | Every cell id covering an axis-aligned bounding box |
