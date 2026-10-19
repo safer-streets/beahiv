@@ -3,7 +3,7 @@
 Bit layout (MSB to LSB)::
 
     [63..53]  reserved     11 bits  (always zero, permanently -- see FLOAT_EXACT_BITS)
-    [52]      reserved      1 bit   (zero for now; kept for future use, likely a Morton flag)
+    [52]      reserved      1 bit   (zero for now; kept for future use)
     [51]      measure       1 bit   (see Measure)
     [50]      orientation   1 bit   (see Orientation)
     [49..38]  size         12 bits  (3-bit binary exponent, 9-bit mantissa)
@@ -21,10 +21,7 @@ nothing to say so. Below 2**53 the round trip is exact, so there is nothing to d
 Of the reserved bits, only bit 52 may ever be given a meaning: an id that sets any bit above it is
 no longer exact as a float, which would bring the problem straight back (see FLOAT_EXACT_BITS).
 Until then `encode` never sets it and `decode` refuses an id that has it set, which is what keeps it
-free -- a decoder that ignored unknown bits could never start honouring one. Its likely use is a
-Morton flag: Morton and plain ids are still indistinguishable, so decoding one with the wrong
-function yields wrong q/r rather than an error, and setting bit 52 on Morton ids would let `decode`
-tell them apart.
+free -- a decoder that ignored unknown bits could never start honouring one.
 
 The size is a whole number of metres stored as a small binary float, the way IEEE 754 does it:
 exponent 0 holds the mantissa as-is (0..511 metres, the "subnormal" range), and exponent e >= 1 holds
@@ -257,7 +254,6 @@ def validate_cell_id(cell_id: SupportsIndex) -> tuple[int, int]:
     two fields are not self-validating: the size field holds sizes below SIZE_MIN (0 among them), and
     the reserved field is only meaningful while it stays zero.
 
-    Shared by `decode` and `morton.decode_morton`, which differ only in how they read q/r.
     `batch.decode_batch` re-implements this vectorised rather than calling it per row.
     """
     cell_id = index(cell_id)

@@ -21,7 +21,6 @@ The library is small enough to read in full; do that before extending it. Key mo
 | [coords.py](src/beahiv/coords.py) | Scalar axial ↔ Cartesian (EPSG:27700 metres) conversion, cube-coordinate rounding; the grid origin (`ORIGIN_X`/`ORIGIN_Y`) and `side_length_of` |
 | [cell_id.py](src/beahiv/cell_id.py) | 64-bit cell id bit layout: `encode`/`decode`, `CellIndex`; `resolve_size`/`encode_size` for the size arguments |
 | [hierarchy.py](src/beahiv/hierarchy.py) | 2x/0.5x `side_length` lookups, all scalar: `get_parent`/`get_child` are the same-centroid partner (or nothing), `get_parents`/`get_children` every overlapping cell (array input gives the deduplicated union) |
-| [morton.py](src/beahiv/morton.py) | Z-order (Morton) variant of `encode`/`decode` — same fields, bit-interleaved for spatial locality. **Internal, not exported** until bit 52 flags Morton ids (README "Future enhancements"); don't re-export it before then |
 | [geo.py](src/beahiv/geo.py) | Public geographic interface: `lonlat_to_cell`, `bng_to_cell` (WGS84 ↔ EPSG:27700 ↔ cell id), plus `_cell_centre`, the scalar centre lookup behind `geometry.centroid` |
 | [geometry.py](src/beahiv/geometry.py) | On-demand cell geometry, nothing stored: `cell_polygon`/`cell_polygons` → Shapely `Polygon`(s), `centroid`/`centroids` → Shapely `Point`(s) |
 | [neighbours.py](src/beahiv/neighbours.py) | Pure axial arithmetic: `get_neighbours`, `distance`, `k_ring` |
@@ -90,7 +89,7 @@ field) should get a directly corresponding test rather than being covered incide
 - **EPSG:27700 is the native CRS; WGS84 is accepted only at the boundary.** All indexing, geometry,
   and arithmetic happens in EPSG:27700 metres. Only `geo.py` and its vectorised mirror `batch.py`
   import `pyproj` and project; everything else — `cell_id.py`, `coords.py`, `geometry.py`,
-  `neighbours.py`, `morton.py`, `points.py`, `polyfill.py` — never does and never should.
+  `neighbours.py`, `points.py`, `polyfill.py` — never does and never should.
   This is why `geometry.centroid(cell_id, lonlat=True)` delegates to `geo._cell_centre` and
   `batch.cell_to_lonlat_batch` for the WGS84 leg rather than holding a `Transformer` of its own —
   there are already two copies of that transformer without adding a third. Note this is now the
@@ -229,8 +228,8 @@ When reviewing a PR or diff, check:
    (`test_doubling_and_halving_stay_representable`). Every field value is a size, but sizes below
    `SIZE_MIN` aren't allowed, so every encode path
    must go through `cell_id.pack_size`, `encode_batch` included, and every decode path
-   must refuse to read an invalid one — `cell_id.validate_cell_id` is the shared scalar check
-   (`decode`, `decode_morton`), which raises, and `decode_batch` mirrors it vectorised, zeroing
+   must refuse to read an invalid one — `cell_id.validate_cell_id` is the scalar check
+   (`decode`), which raises, and `decode_batch` mirrors it vectorised, zeroing
    the row instead (see the batch-tolerance rule). The same applies to a non-zero reserved field:
    refusing it is what keeps those bits free to mean something later, so don't relax either path
    to "ignore unknown bits" and decode the rest.
@@ -243,7 +242,7 @@ When reviewing a PR or diff, check:
    outside `polyfill.py` may run a point-in-polygon / intersection / containment query: indexing,
    hierarchy and neighbour lookups are pure `(q, r)` arithmetic and must stay that way, which is
    the dependency-light claim README's "Why not H3?" rests on. A `.contains()` or `.intersects()`
-   appearing in `cell_id.py`, `coords.py`, `neighbours.py`, `morton.py`, `geo.py` or `batch.py`
+   appearing in `cell_id.py`, `coords.py`, `neighbours.py`, `geo.py` or `batch.py`
    breaks that and is the thing to catch in review.
    *Importing* Shapely is unrestricted — any module may construct and return `Polygon`/`Point`.
    There used to be an allowlist here (`polyfill.py`/`points.py`/`geometry.py` only), but it was
@@ -306,7 +305,6 @@ src/
     coords.py          # scalar axial <-> Cartesian conversion
     cell_id.py         # 64-bit cell id encode/decode, bit layout, CellIndex
     hierarchy.py        # get_parent(s) / get_child(ren) -- 2x/0.5x side_length: same-centroid (singular) or overlapping (plural)
-    morton.py          # Z-order variant of encode/decode -- internal until bit 52 flags Morton ids
     geo.py             # WGS84 <-> EPSG:27700 <-> cell id (lonlat_to_cell, bng_to_cell)
     geometry.py         # cell_polygon(s) -> Polygon(s), centroid(s) -> Point(s), generated on demand (needs Shapely)
     neighbours.py       # get_neighbours, distance, k_ring
