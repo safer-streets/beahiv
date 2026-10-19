@@ -7,6 +7,74 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Morton ids: plan shelved, unused code removed
+
+- **Why** — the user asked for the planned Morton ids to be finished (the bit-52 follow-up
+  below) and for a comment on how useful they are with non-orthogonal (q, r). Measured in DuckDB,
+  they gave no real benefit at this project's data scale. The user shelved the plan and had the
+  unused internal code removed.
+- **What**
+  - Deleted `src/beahiv/morton.py` and `tests/test_morton.py`. Nothing used the internal
+    `encode_morton`/`decode_morton`, and they were never exported, so the public API is
+    unchanged.
+  - Removed Morton references: README's "Future enhancements" section (Morton was its only
+    item), the "likely a Morton flag" wording for bit 52 in README and the
+    [cell_id.py](src/beahiv/cell_id.py) docstring, the `validate_cell_id` "shared with
+    `decode_morton`" note, and the `morton.py` mentions in AGENTS.md. Bit 52 stays reserved,
+    with no planned use.
+  - The bit-52 flag, the batch Morton functions and the faster interleave that this task built
+    first (step 1 below) were never committed.
+- **Steps that led to shelving the plan**, in order:
+  1. **Prototyped the plan.** Bit 52 became `MORTON_FLAG` (`RESERVED_BITS` 12 → 11), and
+     `validate_cell_id(..., morton=)` made `decode` and `decode_morton` refuse each other's ids.
+     `encode_morton`/`decode_morton` were exported, `batch.encode_morton_batch`/
+     `decode_morton_batch` added, and the bit loops replaced with unrolled magic-number
+     interleaving. Scalar encode went from 2.3 µs to 0.93 µs and decode from 3.4 µs to 1.9 µs.
+     All gates passed.
+  2. **Locality in key space, skewed basis.** Used dense synthetic lattices with random discs
+     and squares 20–80 cells across. The metric was the number of aligned 4096-id blocks
+     touched, relative to the ideal. Disc r=80: row-major plain 54×, Z-order on axial 3.1×,
+     Z-order on offset coordinates 2.9×, square-grid Z-order 3.0×. Square ±80: 36×, 2.4×,
+     2.1×, 2.2×. The 60° skew only turns blocks into √3:1 rhombi, costing about 5–10%; Z-order
+     just needs a linear image of the lattice. Plain ids need the *fewest* ranges for an exact
+     range query (one per q column). This made Morton look 10–20× better than plain ids, but
+     on dense key space, not on real row groups.
+  3. **DuckDB 1.5.5, real pruning.** Used 10M uniform points over 600 × 600 km (~28/km²,
+     crime-like), 100 m FLAT cells, and the same rows sorted randomly, by plain `cell_id`, by
+     Morton and by Hilbert. Each sort was stored as a DuckDB table (rows read, from
+     profiling's `operator_rows_scanned`) and as Parquet with 100k-row groups (rows in groups
+     whose min/max stats match, checked by timing). Results are means over 20 random boxes:
+     - `x/y BETWEEN`, 5 km / 20 km: random 100%, plain 1.8% / 4.3%, Morton 3.3% / 4.7%,
+       Hilbert 2.3% / 3.3%. Parquet query time: random 52 ms, every sorted order 4–6 ms.
+     - On a Morton-sorted table: semi-join on `morton` 2.2% / 10% (DuckDB reduces it to one
+       min..max). An `OR` of `morton BETWEEN` ranges read 36% / 85%, because DuckDB tables
+       don't prune on a disjunction. `UNION ALL` of one query per range read 1.8% / 3.6%.
+       Filtering on `cell_id` read 15% / 19%, because plain-id min/max only bounds q.
+  4. **Why plain ≈ Morton there.** A 100k-row group covers about 3,600 km², more than the query
+     box, so plain order's column-shaped strips are only about 6 km wide. A row-group-statistics
+     model with smaller groups (standing in for denser data), 5 km box: 100k rows/group plain
+     1.82%, Morton 3.28%, Hilbert 2.25%. 10k: 0.96%, 0.46%, 0.29%. 1k: 0.60%, 0.07%, 0.05%.
+     Morton only wins once a row group covers less area than the query box.
+- **Design decisions**
+  - **Shelved.** At crime-data density with default row groups, the gain comes from sorting by
+    *any* spatial key, and plain `cell_id` already is one. Morton ids would add a public API, a
+    spent bit and a second id layout for no measurable improvement.
+  - **Unused code removed rather than kept "for later".** With the plan shelved, `morton.py` had
+    no callers. Keeping it would also have kept the bit-52 plan alive in the docs.
+  - **If dense data ever needs it, Hilbert, not Z-order.** Hilbert prunes on x/y about 30% better
+    than Z-order at every row-group size. A Z-order row group that spans one of the curve's jumps
+    has a wide x/y bounding box. (The claim from step 2, "Hilbert touches the same blocks", only
+    holds for aligned blocks of ids, not for real row groups.) Even then, a Morton or Hilbert
+    *sort column* written alongside `cell_id` is enough, with no need to change the id format or
+    spend bit 52.
+- **Follow-ups**
+  - The deleted code is recoverable from git (`aab3a14:src/beahiv/morton.py`).
+  - GitHub issue #1 (should Morton be the default layout?) was already closed; these findings
+    settle it as "no".
+  - DuckDB practice regardless of key: write tables/Parquet `ORDER BY` a spatial key, filter on
+    the column the data is sorted by (or on raw x/y), and use `UNION ALL` rather than `OR` for
+    several ranges.
+
 ## `measure` defaults to `EDGE_LENGTH`
 
 - **Why** — the user's call, reversing the "no default" decision in the entry below: requiring

@@ -335,7 +335,7 @@ always **below `2**52`**:
 
 ```text
 bits 63-53  reserved     11 bits   always zero, permanently (see "Why 52 bits")
-bit 52      reserved      1 bit    always zero for now; kept for future use, likely a Morton flag
+bit 52      reserved      1 bit    always zero for now; kept for future use
 bit 51      measure       1 bit    0 = EDGE_LENGTH, 1 = EDGE_TO_EDGE
 bit 50      orientation   1 bit    0 = POINTY, 1 = FLAT
 bits 49-38  size         12 bits   3-bit binary exponent, 9-bit mantissa
@@ -353,9 +353,8 @@ kilometres away, with no error. Now there is nothing to detect: the round
 trip is exact. The ids still go in a plain `int64`/`BIGINT` column; every
 array of ids beahiv returns (numpy or Arrow) is `int64`, never `uint64`.
 
-**Reserved bits.** Bit 52, the 53rd bit, is reserved for future use, most
-likely to flag a Morton-coded id (see "Future enhancements") so that `decode`
-can tell the two apart. It is the only one that may ever be given a meaning; setting any bit
+**Reserved bits.** Bit 52, the 53rd bit, is reserved for future use. It is
+the only one that may ever be given a meaning; setting any bit
 above it would push ids past `2**53` and bring the problem back. No `encode`
 path sets it, and `decode` *rejects* an id with any reserved bit set rather
 than ignoring it — that strictness is what keeps the bit free to be given a
@@ -752,18 +751,6 @@ the SQL side, is the route.
 The CRS is set on arrival rather than carried through: beahiv is EPSG:27700
 throughout and WKB has nowhere to put an SRID, so nothing upstream of
 `set_crs` knows the units are British National Grid metres.
-
-## Future enhancements
-
-**Morton (Z-order) ids.** A variant id that packs the same fields but
-bit-interleaves q/r, so spatially close cells get numerically close ids —
-useful for DuckDB clustering, Parquet sort-order pruning and range scans. The
-encoding is implemented and tested internally (`beahiv.morton`), but it is not
-part of the public API yet: nothing in the id says it is Morton-coded, so
-`decode` — and everything built on it — would read one as a different, valid
-cell without raising. The plan is to set the reserved bit 52 on Morton ids, so
-plain-id functions can refuse them (or decode them correctly), before
-exporting `encode_morton`/`decode_morton`.
 
 ## Testing
 
