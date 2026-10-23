@@ -26,7 +26,9 @@ Write the entry as part of the change, not after the fact.
     `PROJ_NETWORK=ON`, how to check with `best_available`) and plane-vs-ground area. The
     equal-area bullets now link to it. The "sub-microsecond" claim is now 1–2µs, there's a
     `polyfill` timing note, and API rows were added for `Orientation` and `NEIGHBOUR_OFFSETS`
-    (both were missing). SKILL.md rule 3 now covers OSTN15.
+    (both were missing). The "Compact 64-bit cell identifiers" design goal now says ids survive
+    float64 (JSON, pandas NaN coercion), linking to "Cell identifiers". SKILL.md rule 3 now
+    covers OSTN15.
 - **Design decisions**:
   - The centre test runs first for every predicate. A centre inside settles "overlap" and is
     necessary for "full", so hexagons are only built for the remaining cells. That also makes

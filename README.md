@@ -2,16 +2,17 @@
 
 **B**ritish National Grid **E**qual-**A**rea **H**exagonal **I**ndex that's **V**ersatile.
 
-A fast, equal-area hexagonal spatial index native to **EPSG:27700** (British
-National Grid). BEAHIV is a local alternative to H3: it trades global
+A fast, equal-area hexagonal spatial index native to the British
+National Grid (BNG). BEAHIV is a local alternative to H3: it trades global
 coverage for exact, deterministic geometry, and is built for regional
 analysis within Great Britain — crime analysis, spatial statistics,
 regional-scale modelling.
 
 Each letter maps onto something the index actually does:
 
-- **British** — native to EPSG:27700, no spherical geometry anywhere.
-- **Equal-Area** — every cell has identical area in the British National Grid plane (on the ground they differ by
+- **British** — native to BNG (**EPSG:27700**), no spherical geometry anywhere (BNG **does not** cover Northern Ireland
+or the Channel Islands).
+- **Equal-Area** — every cell has identical area in the BNG plane (on the ground they differ by
   up to ~0.25% — see [Technical details](#technical-details)).
 - **Hexagonal** — a regular hexagonal lattice, pointy-top or flat-top.
 - **Index** — O(1) coordinate → cell, O(1) neighbour, O(1) distance,
@@ -20,6 +21,7 @@ Each letter maps onto something the index actually does:
 - **Versatile** — side length and the q/r offset are both parameters
   baked straight into the bits, not values looked up from a table, so
   neither is fixed by the format itself.
+
 
 ## Philosophy
 
@@ -37,7 +39,9 @@ analysis rather than global indexing.
 - Deterministic coordinate → cell mapping, no lookup tables
 - No spatial joins, no point-in-polygon queries, no R-tree
 - O(1) coordinate lookup, O(1) neighbour lookup, O(1) distance
-- Compact 64-bit cell identifiers
+- Compact 64-bit cell identifiers that survive conversion to float64, so
+  JSON serialisation and pandas' coercion of an id column with missing
+  values give back the same cell (see [Cell identifiers](#cell-identifiers))
 - No spherical geometry, no pentagons, no varying cell sizes
 
 This project deliberately avoids global coverage in favour of local
