@@ -11,7 +11,8 @@ regional-scale modelling.
 Each letter maps onto something the index actually does:
 
 - **British** — native to EPSG:27700, no spherical geometry anywhere.
-- **Equal-Area** — every cell has identical area, always.
+- **Equal-Area** — every cell has identical area in the British National Grid plane (on the ground they differ by
+  up to ~0.25% — see [Technical details](#technical-details)).
 - **Hexagonal** — a regular hexagonal lattice, pointy-top or flat-top.
 - **Index** — O(1) coordinate → cell, O(1) neighbour, O(1) distance,
   with cell coordinates offset-biased directly into the id
@@ -31,7 +32,7 @@ analysis rather than global indexing.
 
 ## Design goals
 
-- Equal-area cells — every hex has identical area, always
+- Equal-area cells — every hex has identical area in the projected plane
 - Single neighbour relationship, six neighbours per cell
 - Deterministic coordinate → cell mapping, no lookup tables
 - No spatial joins, no point-in-polygon queries, no R-tree
@@ -445,8 +446,8 @@ pass a list, a numpy array, or a pandas Series and get one back
 cell_ids = beahiv.lonlat_to_cell(lons, lats, size=500)  # lons/lats: array-like
 ```
 
-A plain scalar still takes the pure-Python path with no numpy import and
-sub-microsecond latency; anything else dispatches to the numpy-vectorised
+A plain scalar still takes the pure-Python path with no numpy call, at
+about 1µs a call from EPSG:27700 and 2µs from WGS84; anything else dispatches to the numpy-vectorised
 implementation in `beahiv.batch`, which also remains available directly
 for callers who want an unambiguous vectorised call:
 
@@ -623,6 +624,11 @@ matching h3's `contain` vocabulary: `"overlap"` (any part of the hex
 touches the polygon), `"center"` (hex centre inside the polygon), or
 `"full"` (hex entirely inside the polygon).
 
+The predicates run vectorised over chunks of candidate cells, so a fill
+costs roughly 0.1–0.6µs per returned cell for `"overlap"`/`"centre"` (a
+100×100km box at 25m — 6 million cells — takes about half a second) and
+about 1µs for `"full"`, which has to test each cell's whole hexagon.
+
 For the common case of an axis-aligned bounding box rather than an
 arbitrary polygon, `beahiv.bbox_fill` is a thin convenience wrapper —
 same `predicate` semantics, no need to build a Shapely `Polygon` first:
@@ -778,6 +784,7 @@ Property tests cover:
 | `encode(q, r, *, size, measure=EDGE_LENGTH, orientation=FLAT)` | Build a cell id. Every size-taking function below takes `size` and `measure` the same way |
 | `decode(cell_id)` | Recover `CellIndex(q, r, size, measure, orientation)`; raises for any id `encode` couldn't have produced |
 | `Measure` | `EDGE_LENGTH` / `EDGE_TO_EDGE` — what a cell's `size` measures |
+| `Orientation` | `POINTY` / `FLAT` (the default) — two different lattices, not a relabelling; never mix their ids |
 | `INVALID_CELL_ID` | The all-zero sentinel emitted for missing input — scalar `decode` raises for it; the batch functions give a missing value |
 | `lonlat_to_cell(lon, lat, *, size, measure, orientation)` | WGS84 → cell id (scalar, array-like, or pyarrow). Raises outside EPSG:27700's area of use (lon −9.01–2.01, lat 49.75–61.01) |
 | `latlon_to_cell(lat, lon, *, size, measure, orientation)` | Deprecated lat-first spelling of `lonlat_to_cell` |
@@ -788,6 +795,7 @@ Property tests cover:
 | `cell_polygon(cell_id)` | Cell outline as a Shapely `Polygon`, in EPSG:27700 |
 | `cell_polygons(cell_ids)` | Vectorised `cell_polygon` — one same-grid cell id list in, one `Polygon` per cell out (`None` for a missing/invalid id) |
 | `get_neighbours(cell_id)` | Six neighbouring cell ids |
+| `NEIGHBOUR_OFFSETS` | The six axial `(dq, dr)` steps `get_neighbours` takes, in its order |
 | `distance(cell_a, cell_b)` | Hex grid distance |
 | `k_ring(cell_id, k)` | All cells within `k` hops |
 | `get_parent(cell_id)` | Cell at 2x `side_length` sharing this cell's exact centroid, or `None` if `q`/`r` aren't both even; single id only |
@@ -798,3 +806,70 @@ Property tests cover:
 | `bbox_fill(minx, miny, maxx, maxy, *, size, measure, orientation, predicate)` | Every cell id covering an axis-aligned bounding box |
 | `resize_cell(cell_id, *, size, measure=None, orientation=None, predicate)` | Every `size` cell id covering `cell_id`'s hexagon -- smaller or larger than its own; `measure`/`orientation` default to the cell's |
 
+## Technical details
+
+### WGS84 → British National Grid needs the OSTN15 grid file
+
+`lonlat_to_cell`, `point_to_cell` with WGS84 input, and `centroid(..., lonlat=True)` go through
+pyproj, and the cells they produce are only as reproducible as that transformation. The accurate
+WGS84 ↔ OSGB36 transformation is Ordnance Survey's **OSTN15**, a correction grid published as
+`uk_os_OSTN15_NTv2_OSGBtoETRS.tif` (about 3MB). The pyproj wheels **don't include it**, and when it
+is missing, PROJ **silently** uses a 7-parameter Helmert transformation instead. This raises no
+error and no warning, and points shift by roughly 0.5m (Edinburgh) to 3–4m (Cornwall and the
+Western Isles).
+
+At small cell sizes that changes which cell a point lands in. The share of random points whose cell
+changes between the two transformations:
+
+| Area | 25m cells | 100m cells | 250m cells |
+| --- | --- | --- | --- |
+| London | 4.9% | 1.3% | 0.5% |
+| Cornwall | 10.8% | 2.7% | 1.1% |
+
+So the same `(lon, lat)` can give a different cell id on a machine that has the grid than on one
+that doesn't, such as CI, a fresh container or a colleague's laptop. `bng_to_cell` and everything
+else that starts from EPSG:27700 coordinates is unaffected: there is no datum transformation there.
+
+**Installing it.** Either of these works with the pyproj wheel:
+
+```sh
+# download once, into PROJ's user data directory (pyproj.datadir.get_user_data_dir())
+uv run pyproj sync --file uk_os_OSTN15_NTv2_OSGBtoETRS.tif
+```
+
+```sh
+# or let PROJ fetch the parts of the grid it needs from cdn.proj.org on demand,
+# caching them in the same directory
+export PROJ_NETWORK=ON
+```
+
+In a container or CI image, run the `pyproj sync` line at build time (`--target-directory DIR`
+puts it elsewhere; point `PROJ_USER_WRITABLE_DIRECTORY` at that directory at runtime). Note that the
+pyproj wheel uses its own bundled data directory and the user directory, so a copy installed for a
+system PROJ (e.g. under `/usr/share/proj`) isn't seen.
+
+**Checking it.** This prints `True` only when the best transformation, OSTN15, is usable:
+
+```python
+from pyproj.transformer import TransformerGroup
+
+print(TransformerGroup("EPSG:4326", "EPSG:27700").best_available)
+```
+
+### "Equal-area" holds in the projected plane
+
+Every cell has exactly the same area, `(3√3/2)s²`, **measured in British National Grid
+metres**. BNG is a Transverse Mercator projection, which preserves shape locally but not area: its
+scale factor is 0.9996 on the central meridian (2°W) and grows with distance east or west. So the
+same cell covers slightly different areas *on the ground* in different places:
+
+| Location | BNG area ÷ ground area |
+| --- | --- |
+| Central meridian (2°W) | 0.99920 |
+| London | 0.99963 |
+| Lowestoft (furthest east) | 1.00079 |
+| Outer Hebrides (furthest west) | 1.00167 |
+
+The spread across Great Britain is about 0.25%. A cell on the central meridian covers about 0.25%
+more ground than one in the Outer Hebrides. For counts, densities and rates this is far below any
+other source of error, but a cell is equal-area in the map, not exactly on the ellipsoid.

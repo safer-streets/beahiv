@@ -32,7 +32,12 @@ from beahiv import Orientation
    EPSG:27700. `centroid(s)` does too, unless you pass `lonlat=True`. Set `crs=27700` on any GeoDataFrame you build from them.
 3. **Pick the right entry point for your input:**
    - lon/lat numbers: `lonlat_to_cell`. It checks bounds and raises outside GB
-     (lon −9.01–2.01, lat 49.75–61.01), which also catches swapped axes.
+     (lon −9.01–2.01, lat 49.75–61.01), which also catches swapped axes. Its cells are only
+     reproducible across machines if each has Ordnance Survey's OSTN15 grid
+     (`pyproj sync --file uk_os_OSTN15_NTv2_OSGBtoETRS.tif`, or `PROJ_NETWORK=ON`). Without the
+     grid, PROJ silently uses a Helmert transformation that is up to ~4 m off, which moves ~5–10% of
+     points to a different cell at a 25 m size. `TransformerGroup("EPSG:4326", "EPSG:27700").best_available`
+     says whether the grid is usable. When you already have EPSG:27700 coordinates, prefer them.
    - EPSG:27700 x/y numbers: `bng_to_cell`. It has **no bounds check**, so degrees passed in here
      silently give wrong cells near the grid origin.
    - Shapely or geopandas points: `point_to_cell`. A declared container CRS of 27700 or 4326 is

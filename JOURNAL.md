@@ -7,6 +7,67 @@ Write the entry as part of the change, not after the fact.
 
 <!-- New entries go directly below this line. -->
 
+## Vectorised `polyfill`; README "Technical details" (OSTN15, equal-area)
+
+- **Why** — follows up the review below: document findings 1 and 2, and fix 4 (`polyfill` at ~20µs a cell).
+- **What**:
+  - [src/beahiv/polyfill.py](src/beahiv/polyfill.py): `polyfill` takes `_CHUNK_CELLS` (2**18)
+    candidates at a time over q, using `axial_to_cartesian_batch`, `shapely.contains_xy`, vectorised
+    `shapely.contains`/`intersects`, and `encode_batch` for hits only. Its output is unchanged (same
+    ids, same ascending order). Now 0.07–0.6µs per cell for overlap/centre and ~1µs for full.
+  - [src/beahiv/geometry.py](src/beahiv/geometry.py): new `_hexagons` builds the polygons, shared
+    with `cell_polygons`. Its vertex offsets come from `math` (`_VERTEX_OFFSETS`), not `np.cos`.
+  - [tests/test_polyfill.py](tests/test_polyfill.py): the old per-cell loop is kept as
+    `_reference_polyfill`. The new code is checked against it for a holed polygon, a
+    multipolygon, a diagonal sliver and a union of cells (edges along cell edges), × both
+    orientations × both measures × all predicates. A >2-chunk box is checked against a
+    numpy-only centre test.
+  - README: a new "Technical details" section covers OSTN15 (the impact, `pyproj sync` /
+    `PROJ_NETWORK=ON`, how to check with `best_available`) and plane-vs-ground area. The
+    equal-area bullets now link to it. The "sub-microsecond" claim is now 1–2µs, there's a
+    `polyfill` timing note, and API rows were added for `Orientation` and `NEIGHBOUR_OFFSETS`
+    (both were missing). SKILL.md rule 3 now covers OSTN15.
+- **Design decisions**:
+  - The centre test runs first for every predicate. A centre inside settles "overlap" and is
+    necessary for "full", so hexagons are only built for the remaining cells. That also makes
+    full ⊆ centre ⊆ overlap hold by construction.
+  - Candidates are dropped when their centre is more than s outside the polygon bounds: the axial
+    range is a parallelogram about twice the box's area.
+  - Vertex offsets come from `math` so the polygons are bit-identical to `cell_polygon`, which
+    matters when a polygon edge lies exactly on a cell edge.
+  - Tried and dropped: skipping "full"'s exact test for cells more than s from the boundary.
+    Prepared `dwithin` cost about as much per point (~0.4–1µs) as the `contains` it would save.
+- **Follow-ups**: the WGS84 transformer still falls back silently. `only_best=True` returns `inf`
+  rather than raising, so a real guard would check `TransformerGroup(...).best_available` at
+  import or first use; not done (only documenting was asked for). Only one candidate shape is
+  generated per chunk (q over the full r range), so some numpy work is wasted on very skewed boxes.
+
+## Review: weaknesses in the core indexing (investigation only, no code changed)
+
+- **Why** — I was asked for an outside review of whether the core point → cell indexing is sound.
+- **What** — Probed it empirically (scratch scripts, not committed). With 20k random BNG points ×
+  both orientations × both measures × sizes 3/7/50/1000m, every point fell inside its own
+  `cell_polygon`, with zero scalar/batch mismatches, including at exact hex vertices. All 312
+  tests pass. `bng_to_cell` takes ~1µs per call and `lonlat_to_cell` ~2µs.
+- **Findings** (none fixed yet):
+  - The WGS84 path depends on the environment. `_TO_BNG` uses OSTN15 only when
+    `uk_os_OSTN15_NTv2_OSGBtoETRS.tif` is present: it isn't in pyproj's wheel, and on this machine
+    it came from the user's PROJ cache. Without it, PROJ silently falls back to Helmert, moving
+    points 0.5–4m. That changes the cell for 5% (London) to 11% (Cornwall) of points at 25m, and
+    1–3% at 100m. A fix: `only_best=True`, or check the pipeline and raise.
+  - Cells are equal-area on the map plane, not on the ground. The Transverse Mercator areal
+    scale runs from 0.9992 (central meridian) to 1.0017 (Outer Hebrides), so ground areas
+    differ by ~0.25%. README's "identical area, always" overstates this, and so does its
+    "sub-microsecond" scalar claim (measured 1–2µs).
+  - The id layout has no spatial locality: neighbour id deltas are ±1 and ±524,288 (r is in
+    the low bits, q in the high ones), so sorted ids form strips. This matters for range or
+    row-group pruning; it's the shelved Morton question.
+  - `polyfill` takes ~20µs per output cell, because it calls Shapely once per cell in a Python
+    double loop over an axial parallelogram. A 20×20km box at 25m takes 5s.
+  - Minor: an `np.float32` scalar dispatches to the batch path and returns a 0-d array. On
+    `experimental/rust` (where this review was run), the `xenoform-rs` source is an editable
+    sibling path, so that branch can't be installed from a clean checkout.
+
 ## Morton ids: plan shelved, unused code removed
 
 - **Why** — the user asked for the planned Morton ids to be finished (the bit-52 follow-up

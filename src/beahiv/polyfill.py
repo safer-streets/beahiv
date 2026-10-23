@@ -5,20 +5,30 @@ Deliberately separate from the core indexing modules (`geo.py`,
 point-in-polygon queries and spatial indexes -- see the README. This is
 the one bulk operation that needs a full point-in-polygon query, done via
 Shapely rather than anything homegrown.
+
+Vectorised: each Shapely predicate runs over a whole array of candidate cells at once, rather than
+once per cell from a Python loop, which was ~20us a cell.
 """
 
 from typing import SupportsIndex
 
-from shapely import Point, box, prepared
+import numpy as np
+import shapely
+from shapely import box
 from shapely.geometry.base import BaseGeometry
 
-from .cell_id import decode, encode_size, resolve_size
-from .coords import axial_to_cartesian, cartesian_to_axial, side_length_of
-from .geometry import cell_polygon
+from .batch import axial_to_cartesian_batch, encode_batch
+from .cell_id import decode, resolve_size
+from .coords import cartesian_to_axial, side_length_of
+from .geometry import _hexagons, cell_polygon
 from .measure import Measure
 from .orientation import Orientation
 
 _PREDICATES = ("overlap", "centre", "center", "full")
+
+# Candidate cells per chunk. Caps the memory a large polygon at a small size can take: a
+# national-scale fill has hundreds of millions of candidates.
+_CHUNK_CELLS = 1 << 18
 
 
 def _axial_bounds(
@@ -75,22 +85,33 @@ def polyfill(
         return []
 
     s = side_length_of(size, measure)
+    minx, miny, maxx, maxy = polygon.bounds
     q_min, q_max, r_min, r_max = _axial_bounds(polygon.bounds, s, orientation)
-    prepared_polygon = prepared.prep(polygon)
+    shapely.prepare(polygon)
 
-    cells = []
-    for q in range(q_min, q_max + 1):
-        for r in range(r_min, r_max + 1):
-            cell_id = encode_size(q, r, size, measure, orientation)
-            if predicate in ("centre", "center"):
-                hit = prepared_polygon.contains(Point(axial_to_cartesian(q, r, s, orientation)))
-            elif predicate == "full":
-                hit = prepared_polygon.contains(cell_polygon(cell_id))
-            else:
-                hit = prepared_polygon.intersects(cell_polygon(cell_id))
-            if hit:
-                cells.append(cell_id)
-    return cells
+    rs = np.arange(r_min, r_max + 1, dtype=np.int64)
+    q_step = max(1, _CHUNK_CELLS // len(rs))
+    chunks = []
+    # q-major, r ascending within each q: ascending id order, as the cells come out
+    for q_lo in range(q_min, q_max + 1, q_step):
+        qs = np.arange(q_lo, min(q_lo + q_step, q_max + 1), dtype=np.int64)
+        q, r = (a.ravel() for a in np.meshgrid(qs, rs, indexing="ij"))
+        x, y = axial_to_cartesian_batch(q, r, s, orientation)
+        # The q/r range is a parallelogram around the bounds, about twice their area. A cell whose
+        # centre is more than its circumradius s outside them can't touch the polygon.
+        near = (x >= minx - s) & (x <= maxx + s) & (y >= miny - s) & (y <= maxy + s)
+        q, r, x, y = q[near], r[near], x[near], y[near]
+
+        # A centre inside the polygon settles "overlap" (it's in both) and is necessary for "full"
+        # (a hexagon inside the polygon has its centre in the interior), so hexagons are only built
+        # for the cells it leaves open: those with a centre outside for one, inside for the other.
+        hit = shapely.contains_xy(polygon, x, y)
+        if predicate == "full":
+            hit[hit] = shapely.contains(polygon, _hexagons(x[hit], y[hit], s, orientation))
+        elif predicate == "overlap":
+            hit[~hit] = shapely.intersects(polygon, _hexagons(x[~hit], y[~hit], s, orientation))
+        chunks.append(encode_batch(q[hit], r[hit], size=size, measure=measure, orientation=orientation))
+    return np.concatenate(chunks).tolist()
 
 
 def bbox_fill(
