@@ -19,6 +19,25 @@ _VERTEX_ANGLES_DEG = {
     Orientation.FLAT: (0, 60, 120, 180, 240, 300),
 }
 
+# Taken from math rather than np.cos/np.sin, which needn't round the same way: the vectorised
+# hexagons below must have cell_polygon's vertices to the bit, or a polygon edge that runs exactly
+# along a cell edge could touch the cell one way and not the other.
+_VERTEX_OFFSETS = {
+    orientation: (
+        np.array([math.cos(math.radians(theta)) for theta in angles]),
+        np.array([math.sin(math.radians(theta)) for theta in angles]),
+    )
+    for orientation, angles in _VERTEX_ANGLES_DEG.items()
+}
+
+
+def _hexagons(xc: np.ndarray, yc: np.ndarray, side_length: float, orientation: Orientation) -> np.ndarray:
+    """An object array of the hexagons centred on 1-D `xc`/`yc`, vertex for vertex as `cell_polygon`."""
+    cos, sin = _VERTEX_OFFSETS[orientation]
+    vx = xc[:, None] + side_length * cos
+    vy = yc[:, None] + side_length * sin
+    return shapely.polygons(np.stack([vx, vy], axis=-1))
+
 
 def cell_polygon(cell_id: SupportsIndex) -> Polygon:
     """Return a cell's six-vertex outline as a Shapely `Polygon`, in EPSG:27700 metres."""
@@ -52,10 +71,7 @@ def cell_polygons(cell_ids: CellIdsLike) -> list[Polygon | None]:
     valid = ~np.isnan(xc)
     polygons = np.full(xc.shape, None, dtype=object)
     if np.any(valid):
-        theta = np.radians(_VERTEX_ANGLES_DEG[orientation])
-        vx = xc[valid, None] + side_length * np.cos(theta)
-        vy = yc[valid, None] + side_length * np.sin(theta)
-        polygons[valid] = shapely.polygons(np.stack([vx, vy], axis=-1))
+        polygons[valid] = _hexagons(xc[valid], yc[valid], side_length, orientation)
     return polygons.tolist()
 
 

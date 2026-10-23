@@ -1,13 +1,79 @@
+import numpy as np
 import pytest
-from shapely.geometry import Point, Polygon
+from shapely.geometry import MultiPolygon, Point, Polygon
 from shapely.ops import unary_union
 
-from beahiv import Measure, Orientation, bbox_fill, centroid, decode, encode, polyfill, resize_cell
+from beahiv import Measure, Orientation, bbox_fill, centroid, decode, encode, k_ring, polyfill, resize_cell
+from beahiv.batch import axial_to_cartesian_batch
+from beahiv.coords import side_length_of
 from beahiv.geometry import cell_polygon
+from beahiv.polyfill import _CHUNK_CELLS, _axial_bounds
 
 
 def _square(minx, miny, maxx, maxy):
     return Polygon([(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy)])
+
+
+def _reference_polyfill(polygon, size, measure, orientation, predicate):
+    """polyfill as it was before vectorising: one scalar Shapely predicate per candidate cell."""
+    s = side_length_of(size, measure)
+    q_min, q_max, r_min, r_max = _axial_bounds(polygon.bounds, s, orientation)
+    cells = []
+    for q in range(q_min, q_max + 1):
+        for r in range(r_min, r_max + 1):
+            cell_id = encode(q, r, size=size, measure=measure, orientation=orientation)
+            if predicate == "centre":
+                hit = polygon.contains(centroid(cell_id))
+            elif predicate == "full":
+                hit = polygon.contains(cell_polygon(cell_id))
+            else:
+                hit = polygon.intersects(cell_polygon(cell_id))
+            if hit:
+                cells.append(cell_id)
+    return cells
+
+
+_ORIGIN_CELL = encode(0, 0, size=600, measure=Measure.EDGE_LENGTH)
+_REFERENCE_POLYGONS = {
+    "holed": Polygon(
+        [(530_000, 180_000), (533_100, 180_400), (532_200, 182_900), (530_600, 182_100)],
+        [[(531_000, 180_900), (532_000, 181_000), (531_400, 181_900)]],
+    ),
+    "multi": MultiPolygon([_square(400_000, 300_000, 401_000, 300_700), _square(402_000, 301_000, 402_300, 302_500)]),
+    "sliver": Polygon([(0, 0), (400, 0), (3400, 3000), (3000, 3000)]),
+    # edges along the edges of the 100m cells (600 = 6 x 100, same origin): the touching cases
+    "cell-aligned": unary_union([cell_polygon(c) for c in k_ring(_ORIGIN_CELL, 1)]),
+}
+
+
+@pytest.mark.parametrize("predicate", ["overlap", "centre", "full"])
+@pytest.mark.parametrize("measure", list(Measure))
+@pytest.mark.parametrize("orientation", list(Orientation))
+@pytest.mark.parametrize("name", list(_REFERENCE_POLYGONS))
+def test_polyfill_matches_the_per_cell_reference(name, orientation, measure, predicate):
+    polygon = _REFERENCE_POLYGONS[name]
+    expected = _reference_polyfill(polygon, 100, measure, orientation, predicate)
+    assert expected
+    assert polyfill(polygon, size=100, measure=measure, orientation=orientation, predicate=predicate) == expected
+
+
+@pytest.mark.parametrize("orientation", list(Orientation))
+def test_polyfill_across_chunks_has_no_gaps_or_repeats(orientation):
+    # enough candidate cells to need several chunks; for a box, "centre" is just the centres
+    # strictly inside it, which numpy can check without Shapely
+    size = 10
+    polygon = _square(500_000, 170_000, 510_000, 180_000)
+    q_min, q_max, r_min, r_max = _axial_bounds(polygon.bounds, size, orientation)
+    q, r = (a.ravel() for a in np.meshgrid(np.arange(q_min, q_max + 1), np.arange(r_min, r_max + 1), indexing="ij"))
+    assert len(q) > 2 * _CHUNK_CELLS
+    x, y = axial_to_cartesian_batch(q, r, float(size), orientation)
+    inside = (x > 500_000) & (x < 510_000) & (y > 170_000) & (y < 180_000)
+
+    cells = polyfill(polygon, size=size, orientation=orientation, predicate="centre")
+
+    assert cells == [
+        encode(qi, ri, size=size, orientation=orientation) for qi, ri in zip(q[inside], r[inside], strict=True)
+    ]
 
 
 @pytest.mark.parametrize("orientation", list(Orientation))
